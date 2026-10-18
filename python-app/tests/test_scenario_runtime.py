@@ -50,6 +50,44 @@ async def test_all_scenarios_finish_only_with_awaited_resource_cleanup(flow, lab
     assert flow.browser.execution is flow.worker
 
 
+async def test_missing_claude_key_fails_before_desktop_start(flow, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    context = flow.context()
+    context.detail["run"]["model"] = "anthropic:claude-sonnet-4-5"
+    with pytest.raises(RunnerCoreError) as caught:
+        await execute_scenario(context)
+    assert caught.value.code == "missing_api_key"
+    flow.launch_worker.assert_not_awaited()
+
+
+async def test_omp_desktop_uses_the_saved_account_without_an_api_key(flow, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    loop = AsyncMock(return_value={"notes": ["omp final"]})
+    monkeypatch.setattr("app.omp_client.run_omp_code_loop", loop)
+    monkeypatch.setattr("app.responses_loop.create_default_responses_client", lambda: (_ for _ in ()).throw(AssertionError("api key client")))
+    context = flow.context()
+    context.detail["run"]["labId"] = "desktop"
+    context.detail["run"]["scenarioId"] = "desktop-cad-engine"
+    context.detail["run"]["model"] = "omp:openai-codex/gpt-6-astra"
+    await execute_scenario(context)
+    loop.assert_awaited_once()
+    assert loop.await_args.kwargs["selector"] == "openai-codex/gpt-6-astra"
+    assert context.complete_run.call_args.kwargs["notes"] == ["omp final"]
+    flow.launch_browser.assert_not_awaited()
+
+
+async def test_desktop_target_does_not_open_a_web_lab(flow):
+    context = flow.context()
+    context.detail["run"]["labId"] = "desktop"
+    context.detail["run"]["scenarioId"] = "desktop-cad-engine"
+    await execute_scenario(context)
+    flow.launch_browser.assert_not_awaited()
+    flow.server.close.assert_not_awaited()
+    flow.worker.close.assert_awaited_once()
+    flow.client.close.assert_awaited_once()
+    assert context.complete_run.call_args.kwargs["notes"] == ["model final"]
+
+
 async def test_unknown_scenario_fails_before_desktop_start(flow):
     context = flow.context()
     context.detail["run"]["scenarioId"] = "missing"

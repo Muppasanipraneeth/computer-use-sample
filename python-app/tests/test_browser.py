@@ -78,12 +78,16 @@ async def launch(tmp_path, **kwargs):
 
 async def test_launch_owns_process_profile_and_uses_public_cdp_apis(browser_harness, tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "do-not-pass")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "do-not-pass")
+    monkeypatch.setenv("CUA_COMPATIBLE_API_KEY", "do-not-pass")
     session = await launch(tmp_path)
     assert session.target_label == "Kanban lab"
     assert session.viewport == {"height": 900, "width": 1440}
     assert "--remote-debugging-port=0" in browser_harness.child.command
     assert "--no-startup-window" in browser_harness.child.command
     assert "OPENAI_API_KEY" not in browser_harness.child.environment
+    assert "ANTHROPIC_API_KEY" not in browser_harness.child.environment
+    assert "CUA_COMPATIBLE_API_KEY" not in browser_harness.child.environment
     browser_harness.playwright.chromium.connect_over_cdp.assert_awaited_once_with(
         "http://127.0.0.1:45321", timeout=15000
     )

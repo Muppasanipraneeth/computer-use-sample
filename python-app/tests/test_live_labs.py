@@ -12,7 +12,7 @@ from app.runner import RunnerManager
 
 pytestmark = [pytest.mark.live, pytest.mark.skipif(os.environ.get("CUA_LIVE_TESTS") != "1", reason="Set CUA_LIVE_TESTS=1 to run live model/desktop tests.")]
 
-PROMPTS = {item["id"]: item["defaultPrompt"] for item in list_scenarios()}
+PROMPTS = {item["id"]: item["defaultPrompt"] for item in list_scenarios() if item["labId"] != "desktop"}
 
 
 @pytest.mark.parametrize("scenario_id", list(PROMPTS))

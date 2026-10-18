@@ -3,12 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_MODEL,
+  formatModelSelection,
+  parseModelSelection,
   runDetailSchema,
   runEventSchema,
   scenarioResetResponseSchema,
   startRunResponseSchema,
   type BackendCapabilities,
   type BrowserMode,
+  type ModelProvider,
   type ResponseTurnBudget,
   type RunDetail,
   type RunEvent,
@@ -134,6 +139,15 @@ export function useRunStream({
   const [selectedScenarioId, setSelectedScenarioId] = useState(
     initialScenario?.id ?? "",
   );
+  const configuredModel = parseModelSelection(capabilities?.defaults.model ?? DEFAULT_MODEL);
+  const initialModel = parseModelSelection(initialRun?.run.model ?? capabilities?.defaults.model ?? DEFAULT_MODEL);
+  const [modelProvider, setModelProvider] = useState<ModelProvider>(initialModel.provider);
+  const [modelIds, setModelIds] = useState<Record<ModelProvider, string>>({
+    openai: initialModel.provider === "openai" ? initialModel.modelId : configuredModel.provider === "openai" ? configuredModel.modelId : DEFAULT_MODEL,
+    anthropic: initialModel.provider === "anthropic" ? initialModel.modelId : DEFAULT_ANTHROPIC_MODEL,
+    compatible: initialModel.provider === "compatible" ? initialModel.modelId : "",
+  });
+  const modelId = modelIds[modelProvider];
   const [browserMode, setBrowserMode] = useState<BrowserMode>(initialRun?.run.browserMode ?? capabilities?.defaults.browserMode ?? "headless");
   const [maxResponseTurns, setMaxResponseTurns] =
     useState<ResponseTurnBudget>(initialRun?.run.maxResponseTurns ?? defaultMaxResponseTurns);
@@ -488,6 +502,9 @@ export function useRunStream({
     setActiveRun(detail);
     setRunEvents(detail.events);
     setSelectedScenarioId(detail.run.scenarioId);
+    const selectedModel = parseModelSelection(detail.run.model);
+    setModelProvider(selectedModel.provider);
+    setModelIds((current) => ({ ...current, [selectedModel.provider]: selectedModel.modelId }));
     setBrowserMode(detail.run.browserMode);
     setMaxResponseTurns(detail.run.maxResponseTurns);
     setPrompt(detail.run.prompt);
@@ -542,7 +559,7 @@ export function useRunStream({
 
   const handleStartRun = async () => {
     if (!runnerOnline || !selectedScenario || controlsLocked ||
-      startRecovery === "unavailable" || prompt.trim().length === 0) {
+      startRecovery === "unavailable" || prompt.trim().length === 0 || modelId.trim().length === 0) {
       return;
     }
 
@@ -563,7 +580,7 @@ export function useRunStream({
           body: JSON.stringify({
             browserMode,
             maxResponseTurns,
-            model: capabilities?.defaults.model,
+            model: formatModelSelection(modelProvider, modelId),
             prompt,
             scenarioId: selectedScenario.id,
           }),
@@ -839,6 +856,8 @@ export function useRunStream({
     handleStopRun,
     matchingWorkspaceState,
     maxResponseTurns,
+    modelId,
+    modelProvider,
     pendingAction,
     prompt,
     runnerOnline,
@@ -851,6 +870,10 @@ export function useRunStream({
     selectedScenarioId,
     setBrowserMode,
     setMaxResponseTurns,
+    setModelProvider,
+    setModelId: (value: string) => {
+      setModelIds((current) => ({ ...current, [modelProvider]: value }));
+    },
     setPrompt,
     setStreamLogs,
     streamLogs,

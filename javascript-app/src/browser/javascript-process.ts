@@ -56,10 +56,9 @@ const aborted = () => new JavaScriptRuntimeError("Run aborted.", "run_aborted");
 
 export async function launchJavaScriptSession(options: Options): Promise<JavaScriptSession> {
   if (options.signal?.aborted) throw aborted();
+  const secretEnvNames = new Set(["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CUA_COMPATIBLE_API_KEY"]);
   const childEnvironment = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) =>
-      name.toUpperCase() !== "OPENAI_API_KEY",
-    ),
+    Object.entries(process.env).filter(([name]) => !secretEnvNames.has(name.toUpperCase())),
   );
   // The parent retains a browser handle even if model code blocks the worker.
   const browserServer = await chromium.launchServer({

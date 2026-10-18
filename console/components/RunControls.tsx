@@ -1,6 +1,6 @@
 "use client";
 
-import { DEFAULT_MODEL_DISPLAY_NAME } from "@cua-sample/contracts";
+import { DEFAULT_MODEL_DISPLAY_NAME, type ModelProvider } from "@cua-sample/contracts";
 
 import type {
   BackendCapabilities,
@@ -11,6 +11,7 @@ import type {
 
 import {
   browserHelpText,
+  modelProviderHelpText,
   turnBudgetHelpText,
 } from "./helpers";
 import type { ActionButtonsProps } from "./types";
@@ -21,8 +22,12 @@ type RunControlsProps = {
   browserMode: BrowserMode;
   controlsLocked: boolean;
   maxResponseTurns: ResponseTurnBudget;
+  modelId: string;
+  modelProvider: ModelProvider;
   onBrowserModeChange: (value: BrowserMode) => void;
   onMaxResponseTurnsChange: (value: ResponseTurnBudget) => void;
+  onModelIdChange: (value: string) => void;
+  onModelProviderChange: (value: ModelProvider) => void;
   onPromptChange: (value: string) => void;
   onScenarioChange: (value: string) => void;
   prompt: string;
@@ -131,8 +136,12 @@ export function RunControls({
   browserMode,
   controlsLocked,
   maxResponseTurns,
+  modelId,
+  modelProvider,
   onBrowserModeChange,
   onMaxResponseTurnsChange,
+  onModelIdChange,
+  onModelProviderChange,
   onPromptChange,
   onScenarioChange,
   prompt,
@@ -208,6 +217,39 @@ export function RunControls({
             ) : (
               <span className="advancedHint">{backendId === "python" ? "Visible desktop" : "Visible browser"}</span>
             )}
+          </div>
+
+          <div className="railField">
+            <div className="fieldLabel">
+              <label htmlFor="model-provider">Model provider</label>
+              <InfoPopover
+                id="model-provider-help-popover"
+                label="Model provider"
+                text={modelProviderHelpText}
+              />
+            </div>
+            <select
+              disabled={controlsLocked}
+              id="model-provider"
+              onChange={(event) => onModelProviderChange(event.target.value as ModelProvider)}
+              value={modelProvider}
+            >
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Claude</option>
+              <option value="compatible">Other API</option>
+            </select>
+          </div>
+
+          <div className="railField">
+            <label htmlFor="model-id">Model</label>
+            <input
+              disabled={controlsLocked}
+              id="model-id"
+              onChange={(event) => onModelIdChange(event.target.value)}
+              placeholder={modelProvider === "compatible" ? "model id from that API" : "model id"}
+              type="text"
+              value={modelId}
+            />
           </div>
 
           <div className="railField budgetField">

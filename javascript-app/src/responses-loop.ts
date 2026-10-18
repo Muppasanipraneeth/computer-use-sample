@@ -1,3 +1,4 @@
+import { parseModelSelection } from "@cua-sample/contracts";
 import OpenAI from "openai";
 
 import { type JavaScriptSession } from "./browser/javascript-process.js";
@@ -119,7 +120,7 @@ async function emitModelTurnEvent(
   });
 }
 
-function buildCodeToolDefinitions() {
+export function buildCodeToolDefinitions() {
   return [
     {
       type: "function",
@@ -273,7 +274,7 @@ export async function runResponsesCodeLoop(
       {
         instructions: input.instructions,
         input: nextInput,
-        model: input.context.detail.run.model,
+        model: parseModelSelection(input.context.detail.run.model).modelId,
         parallel_tool_calls: false,
         previous_response_id: previousResponseId,
         reasoning: { effort: "low" },

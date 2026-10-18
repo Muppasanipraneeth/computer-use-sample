@@ -10,7 +10,9 @@ import struct
 import time
 from typing import Any
 
+from .desktop.input_rules import shortcut_instruction
 from .errors import RunnerCoreError
+from .model_selection import parse_model_selection
 from .processes import assert_active, await_active
 
 
@@ -40,7 +42,7 @@ def create_default_responses_client() -> OpenAIResponsesClient:
     return OpenAIResponsesClient(key)
 
 
-def build_code_tool_definitions(platform: str) -> list[dict[str, Any]]:
+def build_code_tool_definitions(platform: str, *, desktop_app: bool = False) -> list[dict[str, Any]]:
     return [
         {
             "type": "function",
@@ -58,10 +60,21 @@ def build_code_tool_definitions(platform: str) -> list[dict[str, Any]]:
                             [
                                 f"Python to execute on the local {platform} desktop. Python globals survive between calls.",
                                 "Available globals: pyautogui, log(value), and display(image), accepting a Pillow image.",
-                                "A visible Chromium window is already open to the lab. Start with display(pyautogui.screenshot()).",
-                                "Use PyAutoGUI mouse and keyboard input. On macOS (darwin), use command hotkeys; elsewhere use ctrl.",
-                                "Screenshots use the same coordinates as PyAutoGUI input, including on Retina displays. All coordinates refer to the full desktop screenshot.",
-                                "Operate only the lab window. No Playwright objects are available. Do not change the PyAutoGUI fail-safe setting.",
+                                "Start with display(pyautogui.screenshot()).",
+                                *(
+                                    [
+                                        "Unreal Editor is already open on the primary display. No practice web lab is open.",
+                                        "Operate only Unreal Editor. Do not click the operator console or other windows.",
+                                    ]
+                                    if desktop_app
+                                    else [
+                                        "A visible Chromium window is already open to the lab.",
+                                        "Operate only the lab window.",
+                                    ]
+                                ),
+                                shortcut_instruction(platform),
+                                "Screenshots use the same coordinates as PyAutoGUI input on macOS Retina displays and on scaled Windows displays. All coordinates refer to the full desktop screenshot.",
+                                "No Playwright objects are available. Do not change the PyAutoGUI fail-safe setting.",
                             ]
                         ),
                     }
@@ -220,11 +233,13 @@ async def run_responses_code_loop(
         request: dict[str, Any] = {
             "instructions": instructions,
             "input": next_input,
-            "model": context.detail["run"]["model"],
+            "model": parse_model_selection(context.detail["run"]["model"]).model_id,
             "parallel_tool_calls": False,
             "reasoning": {"effort": "low"},
             "truncation": "auto",
-            "tools": build_code_tool_definitions(session.execution.platform),
+            "tools": build_code_tool_definitions(
+                session.execution.platform, desktop_app=bool(getattr(session, "desktop_app", False))
+            ),
         }
         if previous_response_id is not None:
             request["previous_response_id"] = previous_response_id

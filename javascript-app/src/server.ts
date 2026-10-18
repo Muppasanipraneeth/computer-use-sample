@@ -8,6 +8,7 @@ import Fastify, { type FastifyReply } from "fastify";
 import {
   DEFAULT_MODEL,
   backendCapabilitiesSchema,
+  ompModelsResponseSchema,
   runDetailSchema,
   runnerErrorResponseSchema,
   scenarioResetResponseSchema,
@@ -17,6 +18,7 @@ import {
   type RunEvent,
 } from "@cua-sample/contracts";
 import { RunnerCoreError, toRunnerErrorResponse } from "./errors.js";
+import { listOmpModels } from "./omp-client.js";
 import { RunnerManager } from "./runner-manager.js";
 import { listScenarios } from "./lab-catalog.js";
 
@@ -169,6 +171,8 @@ export function createServer(options: CreateServerOptions = {}) {
   app.get("/api/scenarios", async () =>
     scenariosResponseSchema.parse(listScenarios()),
   );
+
+  app.get("/api/models", async () => ompModelsResponseSchema.parse(await listOmpModels()));
 
   app.post("/api/scenarios/:id/reset", async (request) =>
     scenarioResetResponseSchema.parse(

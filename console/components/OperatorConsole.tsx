@@ -43,6 +43,8 @@ export function OperatorConsole({
     handleStopRun,
     matchingWorkspaceState,
     maxResponseTurns,
+    modelId,
+    modelProvider,
     pendingAction,
     prompt,
     runnerOnline,
@@ -55,6 +57,8 @@ export function OperatorConsole({
     selectedScenarioId,
     setBrowserMode,
     setMaxResponseTurns,
+    setModelId,
+    setModelProvider,
     setPrompt,
     setStreamLogs,
     streamLogs,
@@ -80,7 +84,8 @@ export function OperatorConsole({
     pendingAction !== null ||
     controlsLocked ||
     startRecovery === "unavailable" ||
-    prompt.trim().length === 0;
+    prompt.trim().length === 0 ||
+    modelId.trim().length === 0;
   const stopDisabled =
     !runnerOnline ||
     !selectedRun ||
@@ -210,8 +215,12 @@ export function OperatorConsole({
               browserMode={browserMode}
               controlsLocked={controlsLocked}
               maxResponseTurns={maxResponseTurns}
+              modelId={modelId}
+              modelProvider={modelProvider}
               onBrowserModeChange={setBrowserMode}
               onMaxResponseTurnsChange={setMaxResponseTurns}
+              onModelIdChange={setModelId}
+              onModelProviderChange={setModelProvider}
               onPromptChange={setPrompt}
               onScenarioChange={handleScenarioChange}
               prompt={prompt}

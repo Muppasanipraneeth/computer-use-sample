@@ -7,12 +7,12 @@ import { scenarioManifestSchema } from "@cua-sample/contracts";
 import { listScenarios } from "../../../javascript-app/src/lab-catalog.js";
 
 describe("scenario registry", () => {
-  it("loads the three lab scenarios", () => {
+  it("loads the lab scenarios and the desktop CAD target", () => {
     const scenarios = listScenarios();
 
-    expect(scenarios).toHaveLength(3);
+    expect(scenarios).toHaveLength(4);
     expect(new Set(scenarios.map((scenario) => scenario.labId))).toEqual(
-      new Set(["kanban", "paint", "booking"]),
+      new Set(["kanban", "paint", "booking", "desktop"]),
     );
 
     for (const scenario of scenarios) {

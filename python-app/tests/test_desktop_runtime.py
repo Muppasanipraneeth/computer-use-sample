@@ -24,12 +24,15 @@ async def runtime(**kwargs):
 async def test_persistent_state_unicode_and_credential_isolation(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-do-not-pass")
     monkeypatch.setenv("OpenAI_Api_Key", "test-case-insensitive")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-do-not-pass")
+    monkeypatch.setenv("CUA_COMPATIBLE_API_KEY", "test-do-not-pass")
     session = await runtime()
     try:
         first = await session.execute("counter = 41\nprint(os.getpid())")
         pid = int(first["output"][0]["text"])
         assert (await session.execute("print(counter + 1, 'café 😀')"))["output"][0]["text"] == "42 café 😀\n"
-        assert (await session.execute("print([k for k in os.environ if k.upper() == 'OPENAI_API_KEY'])"))["output"][0][
+        secret_names = "{'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'CUA_COMPATIBLE_API_KEY'}"
+        assert (await session.execute(f"print([k for k in os.environ if k.upper() in {secret_names}])"))["output"][0][
             "text"
         ] == "[]\n"
     finally:

@@ -23,6 +23,16 @@ def emit(payload):
     sys.__stdout__.flush()
 
 
+def enable_dpi_awareness() -> None:
+    """Make Windows clicks use the same pixel grid as the screenshot on a scaled display."""
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        ctypes.windll.user32.SetProcessDPIAware()
+
+
 def check_desktop(pyautogui):
     width, height = pyautogui.size()
     if width <= 0 or height <= 0:
@@ -159,6 +169,7 @@ def check_screenshot(pyautogui, expected_size):
 
 
 def main():
+    enable_dpi_awareness()
     import pyautogui
 
     width, height = check_desktop(pyautogui)

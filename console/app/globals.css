@@ -471,6 +471,7 @@ code,
 }
 
 .railField select,
+.railField input[type="text"],
 .promptField textarea {
   width: 100%;
   border: 1px solid var(--panel-border-strong);
@@ -479,7 +480,8 @@ code,
   color: var(--text-primary);
 }
 
-.railField select {
+.railField select,
+.railField input[type="text"] {
   min-height: 34px;
   padding: 0 10px;
   font-size: 0.84rem;

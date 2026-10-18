@@ -6,9 +6,9 @@ The model calls `exec_py` to run Python in a persistent process. PyAutoGUI lets 
 
 Follow the [Python quickstart](../README.md#python--pyautogui-quickstart) in the root guide. Before launching, set up desktop access:
 
-- **macOS:** enable Accessibility and Screen Recording for the app launching the runner in System Settings → Privacy & Security, then restart that app.
+- **macOS:** enable Accessibility and Screen Recording for the app launching the runner in System Settings → Privacy & Security, then restart that app. Menu shortcuts use the command key.
+- **Windows:** use a normal graphical desktop session, not a service. Menu shortcuts use the ctrl key. Display scaling is aligned to the screenshot before the first click.
 - **Linux:** use an X11 desktop with PyAutoGUI's screenshot and Tk dependencies installed. If Chromium needs system libraries, run `uv run --project python-app playwright install --with-deps chromium` from the repository root.
-- **Windows:** use a graphical desktop session.
 
 Use a dedicated desktop session and keep the lab window in front on your primary monitor. Python controls your real mouse and keyboard; it requires a visible browser. The quickstart's `--check` command tests desktop access before you start.
 

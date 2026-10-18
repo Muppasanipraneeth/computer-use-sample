@@ -27,12 +27,9 @@ async def bounded(operation: Awaitable[T], seconds: float) -> T:
 
 
 def child_environment() -> dict[str, str]:
-    """The model credential belongs only to the agent process."""
-    return {
-        key: value
-        for key, value in os.environ.items()
-        if key.upper() != "OPENAI_API_KEY"
-    }
+    """Model credentials stay in the agent process, not the desktop worker."""
+    secret_names = {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CUA_COMPATIBLE_API_KEY"}
+    return {key: value for key, value in os.environ.items() if key.upper() not in secret_names}
 
 
 def assert_active(signal: asyncio.Event | None) -> None:

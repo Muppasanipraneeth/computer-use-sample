@@ -33,7 +33,7 @@ async def test_routes_and_capabilities(api):
     assert capabilities["instanceId"] == app.state.instance_id
     assert "verificationEnabled" not in capabilities["defaults"]
     scenarios = (await client.get("/api/scenarios")).json()
-    assert len(scenarios) == 3
+    assert len(scenarios) == 4
     assert all("verification" not in scenario for scenario in scenarios)
     assert (await client.get("/api/runs/active")).json() is None
     result = await client.post("/api/runs", json={"scenarioId": "paint-draw-poster", "prompt": "Draw"})

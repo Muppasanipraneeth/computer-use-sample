@@ -14,7 +14,7 @@ Text = Annotated[str, Field(min_length=1)]
 Count = Annotated[int, Field(ge=0)]
 Positive = Annotated[int, Field(gt=0)]
 TurnBudget = Annotated[int, Field(gt=0, le=50)]
-LabId = Literal["kanban", "paint", "booking"]
+LabId = Literal["kanban", "paint", "booking", "desktop"]
 BrowserMode = Literal["headless", "headful"]
 RunStatus = Literal["running", "completed", "failed", "cancelled"]
 EventType = Literal[

@@ -11,8 +11,8 @@ This repository contains two computer-use agents: one runs JavaScript with **Pla
 You need **Node.js 22.20.0** and an **[OpenAI API key](https://platform.openai.com/api-keys)** with access to the configured model. Corepack uses the repository's pinned **pnpm 10.26.0**. Run these commands in your terminal, replacing the API key placeholder:
 
 ```bash
-git clone https://github.com/openai/openai-cua-sample-app.git
-cd openai-cua-sample-app
+git clone https://github.com/Muppasanipraneeth/computer-use-sample.git
+cd computer-use-sample
 corepack enable
 pnpm install --frozen-lockfile
 cp .env.example .env
@@ -20,6 +20,8 @@ export OPENAI_API_KEY="your_api_key_here"
 ```
 
 Both apps read the root `.env`; shell variables take precedence. You can save the key in `.env` to use it in later sessions.
+
+The model looks at the lab and returns the next code action. OpenAI is the default (`OPENAI_API_KEY`). Claude uses `ANTHROPIC_API_KEY` and a model id prefixed with `anthropic:`. Any OpenAI-compatible chat API uses `CUA_COMPATIBLE_BASE_URL`, `CUA_COMPATIBLE_API_KEY`, and a model id prefixed with `compatible:`. Pick the provider under **Advanced settings**, or set `CUA_DEFAULT_MODEL`. The model must accept images.
 
 Run either quickstart below from the repository root. Once it starts, open the [console](http://127.0.0.1:3000), choose a scenario, edit its prompt, and select **Start Run**. Runs make real API calls. Use **Stop** to interrupt a run; use **Ctrl+C** and wait for shutdown before switching apps.
 
@@ -42,6 +44,10 @@ pnpm python:playwright:install
 uv run --project python-app python -m app.desktop.worker --check
 pnpm dev:python
 ```
+
+## Unreal property view
+
+The practice labs are browser pages. Real-estate work happens in Unreal Editor, the desktop window you already opened, on Windows or macOS. This repo does not contain the engine. Install it from the Epic Games Launcher, open the property project, and leave Unreal Editor in front on the primary display. Start the Python app, choose **Unreal property view**, and edit the prompt if you want a change other than one camera aimed at the property. **Start Run** screenshots that window and clicks inside it. It does not open the web lab. Viewport keys (W, E, R, F, and right-mouse fly) match on both systems. Menu shortcuts use command on macOS and ctrl on Windows. On macOS, do not use command+space; that opens Spotlight. The JavaScript app cannot drive Unreal Editor; start `pnpm dev:python` instead. On macOS, grant Accessibility and Screen Recording first. On Windows, start it from a normal desktop session.
 
 ## Repository Layout
 

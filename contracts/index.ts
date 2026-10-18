@@ -1,10 +1,49 @@
 import { z } from "zod";
+
 import defaults from "./defaults.json" with { type: "json" };
 
 export const DEFAULT_MODEL = defaults.model;
 export const DEFAULT_MODEL_DISPLAY_NAME = defaults.modelDisplayName;
+export const MODEL_PROVIDERS = ["openai", "anthropic", "compatible", "omp"] as const;
+export type ModelProvider = (typeof MODEL_PROVIDERS)[number];
+export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5";
 
-const labIdSchema = z.enum(["kanban", "paint", "booking"]);
+export const ompModelSchema = z.object({
+  provider: z.string().min(1),
+  id: z.string().min(1),
+  selector: z.string().min(1),
+  name: z.string().min(1),
+});
+export type OmpModelInfo = z.infer<typeof ompModelSchema>;
+
+export const ompModelsResponseSchema = z.object({
+  available: z.boolean(),
+  detail: z.string().min(1).optional(),
+  models: z.array(ompModelSchema),
+});
+export type OmpModelsResponse = z.infer<typeof ompModelsResponseSchema>;
+
+export function parseModelSelection(model: string): { provider: ModelProvider; modelId: string } {
+  const trimmed = model.trim();
+  const separator = trimmed.indexOf(":");
+  if (separator > 0) {
+    const prefix = trimmed.slice(0, separator);
+    const modelId = trimmed.slice(separator + 1).trim();
+    if ((MODEL_PROVIDERS as readonly string[]).includes(prefix) && modelId) {
+      return { provider: prefix as ModelProvider, modelId };
+    }
+  }
+  return { provider: "openai", modelId: trimmed };
+}
+
+export function formatModelSelection(provider: ModelProvider, modelId: string) {
+  const id = modelId.trim();
+  if (!id) throw new Error("A model id is required.");
+  if (provider === "openai") return id;
+  return `${provider}:${id}`;
+}
+
+const labIdSchema = z.enum(["kanban", "paint", "booking", "desktop"]);
 
 const categorySchema = z.enum(["productivity", "creativity", "commerce"]);
 

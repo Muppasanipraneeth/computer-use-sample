@@ -163,8 +163,10 @@ describe("persistent JavaScript worker", () => {
 
   it("does not give the worker the runner API key or env-file startup flags", async () => {
     vi.stubEnv("OPENAI_API_KEY", "unit-test-secret");
+    vi.stubEnv("ANTHROPIC_API_KEY", "anthropic-secret");
+    vi.stubEnv("CUA_COMPATIBLE_API_KEY", "compatible-secret");
     const session = await start();
-    const output = await session.execute('const proc = Buffer.constructor("return process")(); console.log(proc.env.OPENAI_API_KEY === undefined, proc.execArgv.some(arg => arg.includes("env-file")));');
+    const output = await session.execute('const proc = Buffer.constructor("return process")(); const env = proc.env; console.log([env.OPENAI_API_KEY, env.ANTHROPIC_API_KEY, env.CUA_COMPATIBLE_API_KEY].every(value => value === undefined), proc.execArgv.some(arg => arg.includes("env-file")));');
     expect(output).toEqual([{ type: "input_text", text: "true false" }]);
   }, 15_000);
 

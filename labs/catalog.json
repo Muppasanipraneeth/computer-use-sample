@@ -61,6 +61,26 @@
         "Reply briefly once the booking is confirmed."
       ],
       "defaultPrompt": "Book the Luma Harbor Hotel from 4/18 to 4/21 for Ada Lovelace (ada.lovelace@example.com). Ensure breakfast is included and request a late arrival after 9pm."
+    },
+    {
+      "id": "desktop-cad-engine",
+      "labId": "desktop",
+      "category": "productivity",
+      "title": "Unreal property view",
+      "description": "Operate Unreal Editor on an open real-estate level. Place a camera on the property. This run does not open a practice web lab.",
+      "defaultPrompt": "Unreal Editor is already open on a real-estate level. Place one Camera Actor aimed at the property and leave that camera selected. Do not save, render, or package the project.",
+      "tags": [
+        "hero",
+        "desktop",
+        "real-estate"
+      ],
+      "templateDirectory": "desktop-app-template",
+      "instructions": [
+        "Use only the operator prompt as the source of truth for what to change on the property.",
+        "The open level is a real-estate view. Bring Unreal Editor to the front, then use Place Actors and the viewport camera.",
+        "Do not install the engine, change project settings, or click outside Unreal Editor.",
+        "Reply briefly once the requested change is visible."
+      ]
     }
   ]
 }
