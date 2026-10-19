@@ -10,7 +10,7 @@ const SCENARIO_ICONS = { "any-task": "chat" };
 // Tile colour per workspace, Notion-style: each place gets its own soft colour.
 const SCENARIO_TONES = { "any-task": "lilac", "desktop-cad-engine": "mint" };
 const LAB_TONES = { kanban: "sky", paint: "peach", booking: "mint" };
-const STEP_ICONS = { action: "click", screen: "eye", thought: "thought", warning: "alert", error: "x", note: "dot", turn: "dot", steer: "chat" };
+const STEP_ICONS = { action: "click", screen: "eye", thought: "thought", warning: "alert", error: "x", note: "dot", turn: "dot", steer: "chat", question: "question" };
 // Action steps get an icon for what they did, read from their label (operator.mjs describeCode).
 const ACTION_ICONS = [
   [/^Read /, "book"],
@@ -96,6 +96,8 @@ const state = {
   focusRunId: null,
   sending: false,
   judging: false, // a follow-up is being judged: add to the task, change it, queue it, stop it, or answer
+  answering: new Set(), // question ids whose answer is on its way to the runner
+  seenQuestions: new Set(), // question ids already announced (notification, voice)
   pausing: false,
   attachments: [], // { kind: "image" | "folder", path, name } waiting in the composer
   steppedAsideFor: null, // the run that took the screen; the window comes back when it ends
@@ -133,7 +135,8 @@ function loadSaved() {
 }
 
 function newChatRecord() {
-  return { id: crypto.randomUUID(), title: "", thread: [], queue: [], unread: false };
+  // routineId: the chat a routine reuses each time it runs, so its results stack up in one place.
+  return { id: crypto.randomUUID(), title: "", thread: [], queue: [], unread: false, routineId: null };
 }
 
 function savedAttachments(list) {
@@ -153,6 +156,7 @@ function savedChats() {
       thread: ids(chat.thread),
       queue: (Array.isArray(chat.queue) ? chat.queue : []).filter((item) => typeof item?.prompt === "string").map((item) => ({ prompt: item.prompt, attachments: savedAttachments(item.attachments) })),
       unread: chat.unread === true,
+      routineId: typeof chat.routineId === "string" ? chat.routineId : null,
     }));
   if (chats.length === 0) chats.push({ ...newChatRecord(), thread: ids(saved.thread) });
   return chats;
@@ -622,7 +626,9 @@ function createRunView(runId) {
   sources.append(sourcesHead, sourceList);
   const error = el("div", "callout error");
   const actions = el("div", "msg-actions");
-  column.append(meta, activity, reply, sources, error, actions);
+  const ask = el("div", "ask-card");
+  ask.hidden = true;
+  column.append(meta, activity, ask, reply, sources, error, actions);
   agent.append(avatar, column);
   root.append(user, agent);
   root.addEventListener("pointerdown", () => {
@@ -635,7 +641,7 @@ function createRunView(runId) {
 
   const view = {
     root, bubble, files, model, badge, activity, summaryIcon, summaryText, summaryNow, summaryTime, steps, strip,
-    reply, sources, sourcesTitle, sourceList, sourcesSig: null, error, actions, rows: new Map(),
+    reply, sources, sourcesTitle, sourceList, sourcesSig: null, error, actions, ask, rows: new Map(),
   };
   views.set(runId, view);
   return view;
@@ -684,7 +690,8 @@ function renderRun(run) {
   view.model.textContent = [run.model ? modelLabel(run.model) : "", run.scenarioTitle].filter(Boolean).join(" · ");
 
   const paused = isRunning(run) && run.paused === true;
-  const label = paused ? "Paused" : ({ starting: "Starting", running: "Working", completed: "Done", failed: "Failed", cancelled: "Stopped" }[run.status] ?? run.status);
+  const waiting = isRunning(run) && Boolean(run.question);
+  const label = waiting ? "Waiting for you" : paused ? "Paused" : ({ starting: "Starting", running: "Working", completed: "Done", failed: "Failed", cancelled: "Stopped" }[run.status] ?? run.status);
   view.badge.textContent = label;
   view.badge.className = `badge ${run.status}`;
 
@@ -707,7 +714,7 @@ function renderRun(run) {
     run.controlsScreen ? "used your screen" : "",
   ].filter(Boolean);
   if (running) {
-    view.summaryText.textContent = paused ? "Paused" : run.status === "starting" ? "Starting" : run.controlsScreen ? "Working on your screen" : sources ? "Researching" : "Working";
+    view.summaryText.textContent = waiting ? "Waiting for your answer" : paused ? "Paused" : run.status === "starting" ? "Starting" : run.controlsScreen ? "Working on your screen" : sources ? "Researching" : "Working";
     const latest = [...run.steps].reverse().find((step) => ["action", "thought"].includes(step.kind));
     view.summaryNow.textContent = latest ? latest.title : "";
   } else {
@@ -748,6 +755,82 @@ function renderRun(run) {
   }
   renderSources(view, run);
   renderActions(view, run);
+  renderQuestion(view, run);
+}
+
+// The agent is waiting for the user: a question (option buttons, or type the answer) or an approval (Approve / Deny).
+function renderQuestion(view, run) {
+  const question = run.question;
+  const signature = question ? `${question.id}|${state.answering.has(question.id)}` : "";
+  if (view.ask.dataset.sig === signature) return;
+  view.ask.dataset.sig = signature;
+  view.ask.hidden = !question;
+  view.ask.replaceChildren();
+  if (!question) return;
+  const approval = question.kind === "approval";
+  const busy = state.answering.has(question.id);
+  view.ask.className = `ask-card ${question.kind}`;
+  const head = el("div", "ask-head");
+  head.append(icon(approval ? "shield" : "question"), el("span", "", approval ? "Jarvis needs your OK" : "Jarvis is asking"));
+  view.ask.append(head, el("p", "ask-text", question.text));
+  if (question.detail) view.ask.append(el("pre", "ask-detail", question.detail));
+  const buttons = el("div", "ask-actions");
+  const choices = approval ? [["approve", "Approve"], ["deny", "Deny"]] : question.options.map((option) => [option, option]);
+  for (const [answer, label] of choices) {
+    const button = el("button", `button ${answer === "deny" ? "ghost" : ""}`, label);
+    button.type = "button";
+    button.disabled = busy;
+    button.addEventListener("click", () => void answerQuestion(run.runId, question, answer));
+    buttons.append(button);
+  }
+  if (!approval) buttons.append(el("span", "ask-hint", choices.length > 0 ? "or type your own answer below" : "Type your answer below"));
+  view.ask.append(buttons);
+}
+
+async function answerQuestion(runId, question, answer) {
+  if (state.answering.has(question.id)) return;
+  state.answering.add(question.id);
+  const run = state.runs.get(runId);
+  if (run) upsertRun(run);
+  const result = await bridge.answerRun(runId, question.id, answer);
+  state.answering.delete(question.id);
+  const latest = state.runs.get(runId);
+  // Clear the card at once; the next poll brings the run's own record (and the "You answered" step).
+  if (result.ok && latest?.question?.id === question.id) upsertRun({ ...latest, question: null });
+  else if (latest) upsertRun(latest);
+  if (!result.ok) toast(result.error, "error");
+  renderComposer();
+  return result.ok;
+}
+
+const YES = /^(y|yes|yeah|yep|ok|okay|sure|approve|approved|go ahead|do it|send it|confirm)\b/i;
+const NO = /^(n|no|nope|deny|don'?t|do not|stop|cancel|decline)\b/i;
+
+/** Typed or spoken words for an open question: the answer itself, or for an approval a clear yes or no (else null). */
+function answerFor(question, words) {
+  if (question.kind !== "approval") return words;
+  if (YES.test(words)) return "approve";
+  if (NO.test(words)) return "deny";
+  return null;
+}
+
+/** A new question: bring the window back if it stepped aside, notify, and say it when Voice is on. */
+function announceQuestion(run) {
+  const question = run.question;
+  if (!question || state.seenQuestions.has(question.id)) return;
+  state.seenQuestions.add(question.id);
+  if (state.steppedAsideFor === run.runId) {
+    // The agent is waiting, so the screen is free; it steps aside again on its next screen step.
+    state.steppedAsideFor = null;
+    void bridge.comeBack();
+  }
+  const chat = chatOf(run.runId);
+  const notification = new Notification(question.kind === "approval" ? "Jarvis needs your OK" : "Jarvis has a question", { body: question.text.slice(0, 180) });
+  notification.addEventListener("click", () => {
+    void bridge.comeBack();
+    if (chat) switchChat(chat.id);
+  });
+  if (state.voice !== "off") void inConversation(() => say(question.kind === "approval" ? `${question.text} Should I go ahead?` : question.text));
 }
 
 function removeRunView(runId) {
@@ -892,6 +975,7 @@ function renderComposer() {
   const runId = state.activeRunId;
   const running = Boolean(runId);
   const paused = running && state.runs.get(runId)?.paused === true;
+  const question = running ? state.runs.get(runId)?.question : null;
   const stopping = running && state.stopping.has(runId);
   const reason = blocker();
   const hasText = $("#prompt").value.trim().length > 0;
@@ -913,13 +997,23 @@ function renderComposer() {
     pause.dataset.glyph = glyph;
     pause.replaceChildren(icon(glyph));
   }
-  $("#prompt").placeholder = running ? (paused ? "Paused. Change the plan, or press play to continue…" : "Add to it, change it, or ask for something next…") : "Ask Jarvis anything…";
+  $("#prompt").placeholder = question
+    ? question.kind === "approval"
+      ? "Type yes or no, or use the buttons above…"
+      : "Type your answer…"
+    : running
+      ? paused
+        ? "Paused. Change the plan, or press play to continue…"
+        : "Add to it, change it, or ask for something next…"
+      : "Ask Jarvis anything…";
   $("#composer-hint").textContent = state.voicePending
     ? "Confirming · Esc or talk over it to change"
     : state.judging
       ? "Working out what you meant…"
-      : running
-        ? paused
+      : question
+        ? "Jarvis is waiting for your answer"
+        : running
+          ? paused
           ? "Paused · press play to continue"
           : hasText
             ? "Enter: Jarvis decides whether to add it, change the plan or do it next"
@@ -1141,6 +1235,11 @@ async function proposeTask({ say: line, prompt }) {
   await send();
 }
 
+/** Lower-case words only, so "London." matches the option "London". */
+function normalized(text) {
+  return ` ${String(text).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
+}
+
 async function onVoiceCommand({ action, prompt, source }) {
   const addressed = source === "wake" || source === "push-to-talk";
   if (action === "none") {
@@ -1151,6 +1250,23 @@ async function onVoiceCommand({ action, prompt, source }) {
     // Plain "stop" / "cancel" need no model: act at once.
     if (action === "stop") return voiceStop();
     if (action === "cancel") return voiceCancel();
+    // An open question takes what you say as its answer. Words caught in the follow-up window without "Hey Jarvis"
+    // may be someone else talking, so they only count when they pick one of the offered options; approvals always
+    // need you to address Jarvis (wake phrase, hold Control, the shortcut) or press a button.
+    const asking = state.activeRunId ? state.runs.get(state.activeRunId) : null;
+    if (asking?.question) {
+      const question = asking.question;
+      const deliberate = addressed || source === "barge-in";
+      const option = question.options.find((choice) => normalized(prompt).includes(normalized(choice)));
+      if (!deliberate && (question.kind === "approval" || !option)) {
+        toast(question.kind === "approval" ? "To approve by voice, hold Control (or say “Hey Jarvis”) and say yes or no." : "Didn't take that as your answer. Hold Control and answer, or type it.", "info");
+        return;
+      }
+      const answer = option ?? answerFor(question, prompt);
+      if (answer === null) return say("Say yes or no.");
+      if (await answerQuestion(asking.runId, question, answer)) return say(answer === "deny" ? "Okay, I won't." : "Got it.", false);
+      return;
+    }
     // While this chat's task works, what you say is judged against it: add, change the plan, queue, stop or answer.
     if (state.activeRunId) return followUp(prompt, { spoken: true });
     state.voicePhase = "thinking";
@@ -1166,6 +1282,11 @@ async function onVoiceCommand({ action, prompt, source }) {
     if (reply.kind === "stop") return voiceStop(reply.say);
     if (reply.kind === "cancel") return voiceCancel(reply.say);
     if (reply.kind === "answer") return say(reply.say);
+    if (reply.kind === "remember" || reply.kind === "schedule") {
+      // Saved by the main process already; refresh the lists in case Settings is open.
+      void (reply.kind === "remember" ? renderMemories() : renderRoutines());
+      return say(reply.say);
+    }
     return proposeTask(reply);
   });
 }
@@ -1225,6 +1346,8 @@ function upsertRun(run) {
   renderChats();
   if (shown && screenRun()?.runId === run.runId) renderScreen();
   if (shown) scrollToLatest();
+  // A question arriving or a pause changes what the composer offers.
+  if (shown && run.runId === state.activeRunId) renderComposer();
 }
 
 function clearComposer() {
@@ -1242,9 +1365,18 @@ async function send(promptOverride, { chat = currentChat(), attachments } = {}) 
   const typed = promptOverride === undefined;
   const prompt = (promptOverride ?? $("#prompt").value).trim();
   const files = attachments ?? (typed ? [...state.attachments] : []);
-  if (!prompt || state.sending) return;
+  if (!prompt || state.sending || state.judging) return;
   if (workingRunIn(chat)) {
     if (!typed) return;
+    const run = state.runs.get(workingRunIn(chat));
+    // An open question takes what you type as its answer.
+    if (run?.question) {
+      const answer = answerFor(run.question, prompt);
+      if (answer === null) return toast("Press Approve or Deny, or type yes or no.", "info");
+      clearComposer();
+      if (!(await answerQuestion(run.runId, run.question, answer))) setPrompt(prompt);
+      return;
+    }
     clearComposer();
     return followUp(prompt, { attachments: files });
   }
@@ -1252,6 +1384,24 @@ async function send(promptOverride, { chat = currentChat(), attachments } = {}) 
   if (reason) {
     toast(reason, "error");
     return;
+  }
+  // "Every morning at 8 …" and "remember …" become a routine or a memory instead of a one-off task.
+  if (typed && files.length === 0) {
+    state.judging = true;
+    renderComposer();
+    const intent = await bridge.typedUnderstand(prompt).catch(() => ({ ok: false }));
+    state.judging = false;
+    renderComposer();
+    const reply = intent.ok ? intent.reply : null;
+    if (reply && ["remember", "schedule", "answer"].includes(reply.kind)) {
+      clearComposer();
+      // say() shows the words itself when it speaks them (or when replies aren't spoken); with Voice off, toast here.
+      if (state.voice === "off") toast(reply.say, "ok");
+      else void say(reply.say, false);
+      if (reply.kind === "remember") void renderMemories();
+      if (reply.kind === "schedule") void renderRoutines();
+      return;
+    }
   }
   state.sending = true;
   if (typed) clearComposer();
@@ -1455,7 +1605,9 @@ async function pollLive() {
     const run = result.run;
     upsertRun(run);
     const lab = state.scenarios.find((item) => item.id === run.scenarioId)?.labId;
-    if (isRunning(run) && run.controlsScreen && !state.steppedAsideFor && lab === "desktop") stepAside(id);
+    announceQuestion(run);
+    // Not while it waits for an answer: the window must stay up so the question can be answered.
+    if (isRunning(run) && run.controlsScreen && !run.question && !state.steppedAsideFor && lab === "desktop") stepAside(id);
     if (!isRunning(run)) finish(run);
   });
 }
@@ -1700,6 +1852,8 @@ function openSettings(tab = "voice") {
   renderPrefs();
   void loadVoices();
   void loadProfile();
+  void renderMemories();
+  void renderRoutines();
   void renderConnections();
   selectSettingsTab(typeof tab === "string" ? tab : "voice");
   $("#settings").showModal();
@@ -1785,6 +1939,132 @@ async function saveProfile() {
   $("#profile-status").classList.toggle("error", !result.ok);
 }
 
+async function renderMemories() {
+  const list = $("#memory-list");
+  const result = await bridge.memories().catch((error) => ({ ok: false, error: String(error) }));
+  if (!result.ok) {
+    list.replaceChildren(el("li", "app-row muted small", result.error));
+    return;
+  }
+  if (result.memories.length === 0) {
+    list.replaceChildren(el("li", "app-row muted small", "Nothing yet."));
+    return;
+  }
+  list.replaceChildren(
+    ...[...result.memories].reverse().map((memory) => {
+      const row = el("li", "app-row");
+      const remove = el("button", "button ghost", "Forget");
+      remove.type = "button";
+      remove.addEventListener("click", async () => {
+        const outcome = await bridge.removeMemory(memory.id);
+        if (!outcome.ok) toast(outcome.error, "error");
+        void renderMemories();
+      });
+      row.append(el("span", "app-name memory-text", memory.text), remove);
+      return row;
+    }),
+  );
+}
+
+async function addMemoryFromForm() {
+  const input = $("#memory-input");
+  const text = input.value.trim();
+  if (!text) return;
+  const result = await bridge.addMemory(text);
+  if (!result.ok) return toast(result.error, "error");
+  input.value = "";
+  void renderMemories();
+}
+
+async function renderRoutines() {
+  const list = $("#routine-list");
+  const result = await bridge.routines().catch((error) => ({ ok: false, error: String(error) }));
+  if (!result.ok) {
+    list.replaceChildren(el("li", "app-row muted small", result.error));
+    return;
+  }
+  if (result.routines.length === 0) {
+    list.replaceChildren(el("li", "app-row muted small", "No routines yet. Add one below, or say “every morning at 8, tell me the news”."));
+    return;
+  }
+  list.replaceChildren(
+    ...result.routines.map((routine) => {
+      const row = el("li", `app-row routine-row ${routine.enabled ? "on" : ""}`);
+      const text = el("div", "routine-text");
+      const next = routine.enabled && routine.nextRunAt ? ` · next ${new Date(routine.nextRunAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}` : routine.enabled ? "" : " · off";
+      text.append(el("span", "app-name", routine.prompt), el("span", "app-status", `${routine.schedule}${next}`));
+      const toggle = el("input", "switch");
+      toggle.type = "checkbox";
+      toggle.setAttribute("role", "switch");
+      toggle.setAttribute("aria-label", routine.enabled ? "Turn off" : "Turn on");
+      toggle.checked = routine.enabled;
+      toggle.addEventListener("change", async () => {
+        const outcome = await bridge.saveRoutine({ ...routine, enabled: toggle.checked });
+        if (!outcome.ok) toast(outcome.error, "error");
+        void renderRoutines();
+      });
+      const runNow = el("button", "button ghost", "Run now");
+      runNow.type = "button";
+      runNow.addEventListener("click", () => void startRoutine({ id: routine.id, prompt: routine.prompt, schedule: routine.schedule }));
+      const remove = el("button", "button ghost", "Delete");
+      remove.type = "button";
+      remove.addEventListener("click", async () => {
+        const outcome = await bridge.removeRoutine(routine.id);
+        if (!outcome.ok) toast(outcome.error, "error");
+        void renderRoutines();
+      });
+      row.append(text, toggle, runNow, remove);
+      return row;
+    }),
+  );
+}
+
+async function addRoutineFromForm() {
+  const prompt = $("#routine-prompt").value.trim();
+  const days = [...document.querySelectorAll("#routine-days input:checked")].map((input) => Number(input.value));
+  const status = $("#routine-status");
+  const result = await bridge.saveRoutine({ prompt, time: $("#routine-time").value, days, enabled: true });
+  status.textContent = result.ok ? "Added." : result.error;
+  status.classList.toggle("error", !result.ok);
+  if (!result.ok) return;
+  $("#routine-prompt").value = "";
+  void renderRoutines();
+}
+
+/** A routine runs like any task, in its own chat that collects every run of it. */
+async function startRoutine(routine) {
+  let chat = state.chats.find((item) => item.routineId === routine.id);
+  if (!chat) {
+    chat = { ...newChatRecord(), title: `Routine · ${routine.prompt.slice(0, 60)}`, routineId: routine.id };
+    state.chats.unshift(chat);
+    persist();
+    renderChats();
+  }
+  if (workingRunIn(chat)) return; // last time's run is still going
+  while (state.sending) await new Promise((resolve) => setTimeout(resolve, 300));
+  await send(routine.prompt, { chat });
+}
+
+// Due routines wait in the main process until the app is ready to start tasks (runner up, model signed in).
+let drainingRoutines = false;
+async function runDueRoutines() {
+  if (drainingRoutines) return;
+  if (blocker()) {
+    setTimeout(() => void runDueRoutines(), 5000);
+    return;
+  }
+  drainingRoutines = true;
+  try {
+    const result = await bridge.takeDueRoutines();
+    for (const routine of result.routines ?? []) {
+      toast(`Routine: ${routine.prompt.slice(0, 80)}`, "info");
+      await startRoutine(routine);
+    }
+  } finally {
+    drainingRoutines = false;
+  }
+}
+
 // Sites people most often want Jarvis to use while signed in, when the app isn't connected through Composio.
 const SIGN_IN_SITES = [
   ["Gmail", "https://mail.google.com/"],
@@ -1838,7 +2118,12 @@ async function renderConnections() {
       button.append(favicon(new URL(url).hostname.replace(/^(www|app|mail|web)\./, "")), el("span", "", name));
       button.addEventListener("click", async () => {
         const outcome = (await bridge.browserSignIn?.(url)) ?? { ok: false, error: "Restart Jarvis to use sign-in." };
-        toast(outcome.ok ? `Sign in to ${name} in the window that opened, then close it.` : outcome.error, outcome.ok ? "info" : "error");
+        if (!outcome.ok) return toast(outcome.error, "error");
+        // On macOS closing the window leaves Chromium running (and tasks keep using it), so ask for a real quit.
+        toast(`Sign in to ${name} in the window that opened, then quit it (${bridge.platform === "darwin" ? "⌘Q" : "close it"}).`, "info");
+        if (outcome.signInAgain) {
+          toast("Jarvis now keeps website logins in the macOS Keychain, so sign in to your sites again. If macOS asks about “Chromium Safe Storage”, click Always Allow.", "info");
+        }
       });
       sites.append(button);
     }
@@ -2002,6 +2287,16 @@ $("#profile-form").addEventListener("keydown", (event) => {
   }
 });
 $("#connections-refresh").addEventListener("click", () => void renderConnections());
+$("#memory-add").addEventListener("click", () => void addMemoryFromForm());
+$("#routine-add").addEventListener("click", () => void addRoutineFromForm());
+// Enter would submit (close) the settings dialog; act on the field instead.
+$("#memory-input").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  void addMemoryFromForm();
+});
+bridge.onSignInWaiting?.(() => toast("The sign-in window opens as soon as the running task finishes its browser step.", "info"));
+bridge.onRoutineDue(() => void runDueRoutines());
 // Connecting finishes in the browser; when the user comes back to Jarvis, show the new state.
 window.addEventListener("focus", () => {
   if ($("#settings").open && !$("#pane-connections").hidden) void renderConnections();
@@ -2113,6 +2408,7 @@ void loadAuth();
 if (state.voiceOn) void enableVoice();
 void checkRunner();
 void checkPermissions();
+void runDueRoutines();
 setInterval(() => void pollLive(), 1000);
 setInterval(() => void checkRunner(), 5000);
 setInterval(() => {

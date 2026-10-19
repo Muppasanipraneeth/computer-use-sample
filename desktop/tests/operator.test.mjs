@@ -116,6 +116,22 @@ test("a follow-up shows as the user's words in the steps; pause and attachments 
   assert.deepEqual(old.attachments, []);
 });
 
+test("an open question shows only while the run works; approvals never offer free options", () => {
+  const question = { id: "q1", kind: "approval", text: "Gmail: send email", options: ["Sure", "Nope"], detail: "To: a@b.c", createdAt: "2026-10-19T08:00:00Z" };
+  const waiting = projectRun({
+    run: { id: "run-7", status: "running", question },
+    events: [event("a1", "run_progress", "Approval requested.", { level: "warn", detail: "Gmail: send email\nTo: a@b.c" }), event("a2", "run_progress", "You declined.", { level: "warn" })],
+  });
+  assert.deepEqual(waiting.question, { id: "q1", kind: "approval", text: "Gmail: send email", detail: "To: a@b.c", options: [] });
+  assert.deepEqual(waiting.steps.map(({ kind, title }) => ({ kind, title })), [
+    { kind: "question", title: "Gmail: send email" },
+    { kind: "steer", title: "Declined" },
+  ]);
+  assert.equal(projectRun({ run: { id: "run-7", status: "cancelled", question } }).question, null);
+  const asked = projectRun({ run: { id: "run-8", status: "running", question: { id: "q2", kind: "question", text: "Work or personal?", options: ["Work", " ", 3, "Personal"] } } });
+  assert.deepEqual(asked.question.options, ["Work", "Personal"]);
+});
+
 test("run projection turns runner events into chat steps and a reply", () => {
   const code = "pyautogui.click(410, 220)\npyautogui.write('cube')\npyautogui.hotkey('command', 's')";
   const detail = {

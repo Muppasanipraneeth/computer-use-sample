@@ -229,6 +229,9 @@ const FINAL_MESSAGE = "Model returned a final response.";
 const PROGRESS_MESSAGE = "Model progress.";
 // The runner's event when a follow-up reaches the agent (runner.py steer_run); its detail is "Added: …" or "Changed plan: …".
 const STEER_MESSAGE = "User instruction added.";
+// Ask-the-user events (runner.py): the question shows as Jarvis asking, the reply as the user's words.
+const ASK_MESSAGES = new Set(["Waiting for your answer.", "Approval requested."]);
+const REPLY_TITLES = { "You answered.": null, "You approved.": "Approved", "You declined.": "Declined" };
 const TURN_MESSAGE = /turn (\d+) completed/i;
 // One alternation so labels come out in code order. `display(web.screenshot())` must precede the generic `display(`.
 const CALL =
@@ -456,6 +459,8 @@ function eventStep(event, browsingHost = null) {
     case "run_progress": {
       if (message === PROGRESS_MESSAGE) return { ...base, kind: "thought", title: detail || message };
       if (message === STEER_MESSAGE) return { ...base, kind: "steer", title: detail || message };
+      if (ASK_MESSAGES.has(message)) return { ...base, kind: "question", title: detail.split("\n")[0] || message, detail };
+      if (Object.hasOwn(REPLY_TITLES, message)) return { ...base, kind: "steer", title: REPLY_TITLES[message] ?? (detail || message) };
       const turn = message.match(TURN_MESSAGE);
       if (turn) return { ...base, kind: "turn", title: `Step ${turn[1]}`, detail };
       return { ...base, kind: base.level === "warn" ? "warning" : "note", title: message, detail };
@@ -471,6 +476,23 @@ const SCREEN_CONTROL = /\bpyautogui\.(?:click|doubleClick|tripleClick|rightClick
 /** True when this exec_py code takes the user's mouse or keyboard, as opposed to background work. */
 export function controlsScreen(code) {
   return SCREEN_CONTROL.test(String(code));
+}
+
+/** The agent's open question, or null. Approvals always offer exactly Approve and Deny. */
+function pendingQuestion(question) {
+  if (!question || typeof question !== "object" || typeof question.id !== "string" || typeof question.text !== "string") return null;
+  const approval = question.kind === "approval";
+  return {
+    id: question.id,
+    kind: approval ? "approval" : "question",
+    text: question.text,
+    detail: typeof question.detail === "string" && question.detail ? question.detail : null,
+    options: approval ? [] : Array.isArray(question.options) ? question.options.filter((option) => typeof option === "string" && option.trim()).slice(0, 6) : [],
+  };
+}
+
+function isRunningStatus(status) {
+  return !TERMINAL_STATUSES.includes(status);
 }
 
 /** Stateless view of one run: the renderer diffs steps by id, so the same detail can be projected on every poll. */
@@ -530,6 +552,7 @@ export function projectRun(detail) {
     steps,
     controlsScreen: screen,
     paused: run.paused === true,
+    question: isRunningStatus(status) ? pendingQuestion(run.question) : null,
     attachments: Array.isArray(run.attachments)
       ? run.attachments.filter((item) => item && typeof item.path === "string").map((item) => ({ kind: item.kind === "folder" ? "folder" : "image", path: item.path, name: String(item.name || path.basename(item.path)) }))
       : [],

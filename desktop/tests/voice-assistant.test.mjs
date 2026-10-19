@@ -8,10 +8,48 @@ import {
   parseFollowUp,
   parseUnderstanding,
   pickUnderstandingModel,
+  quickFollowUp,
   resultInstructions,
   spokenSummary,
+  typedNeedsUnderstanding,
   understandingInstructions,
 } from "../voice/assistant.mjs";
+
+test("obvious follow-ups are decided without the model; questions and look-alikes are not", () => {
+  const kind = (text) => quickFollowUp(text)?.kind ?? null;
+  assert.equal(kind("stop"), "stop");
+  assert.equal(kind("Never mind."), "stop");
+  assert.deepEqual(quickFollowUp("also set the volume to 30%"), { kind: "add", say: "Got it, adding that.", message: "Set the volume to 30%", understood: true });
+  assert.deepEqual(quickFollowUp("after that, open Notes"), { kind: "queue", say: "Okay, I'll do that next.", message: "Open Notes", understood: true });
+  assert.equal(quickFollowUp("no, play Runaway instead").message, "Play Runaway instead");
+  assert.equal(kind("actually use Chrome"), "redirect");
+  for (const text of ["then what?", "actually, what time is it", "no worries", "nothing happened", "stop the music after this song plays", "also what's the weather"]) {
+    assert.equal(kind(text), null, text);
+  }
+});
+
+test("a routine needs a valid time and days, or the user is sent to Settings instead of running it once", () => {
+  const routine = parseUnderstanding('{"kind":"schedule","say":"Every morning at 8.","prompt":"Tell me the top tech news.","time":"08:00","days":[1,0,6,5,4,3,2,2,9]}', "every morning at 8 news");
+  assert.deepEqual(routine, { kind: "schedule", say: "Every morning at 8.", prompt: "Tell me the top tech news.", time: "08:00", days: [0, 1, 2, 3, 4, 5, 6], understood: true });
+  for (const bad of ['"time":"8am","days":[1]', '"time":"24:00","days":[1]', '"time":"08:00","days":[]']) {
+    assert.equal(parseUnderstanding(`{"kind":"schedule","say":"Sure.","prompt":"News.",${bad}}`, "every day news").kind, "answer", bad);
+  }
+  assert.deepEqual(parseUnderstanding('{"kind":"remember","say":"Noted.","prompt":"Prefers Spotify over Apple Music"}', "remember i like spotify"), {
+    kind: "remember",
+    say: "Noted.",
+    prompt: "Prefers Spotify over Apple Music",
+    understood: true,
+  });
+});
+
+test("only typed routines and memory requests wait for the model", () => {
+  for (const text of ["every morning at 8 tell me the news", "On weekdays at 6pm remind me to stretch", "Remember that I prefer Spotify", "daily summary of my inbox"]) {
+    assert.equal(typedNeedsUnderstanding(text), true, text);
+  }
+  for (const text of ["open spotify and play black and white", "what's the weather in hyderabad", "tell me everything about Rust"]) {
+    assert.equal(typedNeedsUnderstanding(text), false, text);
+  }
+});
 
 test("a follow-up decision keeps its message only when it changes or queues work", () => {
   assert.deepEqual(parseFollowUp('{"kind":"queue","say":"I\'ll check the weather after this.","message":"Check the weather in Hyderabad."}', "then weather"), {

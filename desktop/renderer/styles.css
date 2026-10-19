@@ -186,7 +186,40 @@ kbd {
 .recent-status .spinner { width: 11px; height: 11px; }
 /* A run finished in a chat you weren't looking at. */
 .unread-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
-body:not(.platform-darwin) .mac-only { display: none; }
+/* The Control-key watcher exists for macOS and Windows. */
+body.platform-linux .hold-key-pref { display: none; }
+
+/* ---------- the agent asks ---------- */
+
+.ask-card { display: grid; gap: var(--space-2); padding: var(--space-3) var(--space-4); border: 1.5px solid var(--sticker-border); border-radius: var(--radius-lg); background: var(--tile-lilac); color: var(--tile-ink); box-shadow: var(--shadow-sticker); }
+.ask-card[hidden] { display: none; }
+.ask-card.approval { background: var(--tile-peach); }
+.ask-head { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); font-weight: var(--weight-semibold); text-transform: uppercase; letter-spacing: 0.04em; }
+.ask-head .icon { width: 16px; height: 16px; }
+.ask-text { margin: 0; font-size: var(--text-base); line-height: 1.45; }
+.ask-detail { margin: 0; max-height: 180px; overflow: auto; padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg-raised) 70%, transparent); color: var(--fg); font-family: var(--font-mono); font-size: var(--text-sm); white-space: pre-wrap; word-break: break-word; }
+.ask-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.ask-actions .button:disabled { opacity: 0.55; }
+.ask-hint { font-size: var(--text-sm); opacity: 0.75; }
+
+/* ---------- settings: memories and routines ---------- */
+
+.inline-form { display: flex; gap: var(--space-2); }
+.inline-form input { flex: 1; height: 34px; padding: 0 var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--bg-sunken); color: var(--fg); font: inherit; font-size: var(--text-md); }
+.inline-form input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.memory-text { font-weight: var(--weight-regular); }
+.routine-row { flex-wrap: nowrap; }
+.routine-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.routine-text .app-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.routine-row .button { min-width: 0; }
+.routine-form { gap: var(--space-3); }
+.routine-when { display: flex; flex-wrap: wrap; gap: var(--space-4); align-items: end; }
+.routine-when input[type="time"] { width: 120px; }
+.day-picker { display: flex; gap: 4px; }
+.day-picker input { position: absolute; opacity: 0; pointer-events: none; }
+.day-picker span { display: grid; place-items: center; min-width: 40px; height: 30px; padding: 0 6px; border: 1px solid var(--border); border-radius: var(--radius-full); color: var(--fg-muted); font-size: var(--text-sm); cursor: pointer; }
+.day-picker input:checked + span { background: var(--accent); border-color: var(--sticker-border); color: var(--fg-on-accent); }
+.day-picker input:focus-visible + span { box-shadow: 0 0 0 3px var(--accent-soft); }
 
 .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-subtle); opacity: 0.45; flex: none; }
 

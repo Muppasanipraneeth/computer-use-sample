@@ -36,6 +36,8 @@ import {
   understandingInstructions,
   followUpInstructions,
   parseFollowUp,
+  quickFollowUp,
+  typedNeedsUnderstanding,
 } from "./voice/assistant.mjs";
 import { parseVoiceCommand } from "./voice/commands.mjs";
 import { createDucker } from "./voice/ducking.mjs";
@@ -43,6 +45,8 @@ import { createHoldKey, HOLD_MS } from "./voice/hold-key.mjs";
 import { ensureVoiceModels } from "./voice/models.mjs";
 import { DEFAULT_VOICE, findVoice, VOICES } from "./voice/voices.mjs";
 import { readProfile, writeProfile } from "./profile.mjs";
+import { addMemory, readMemories, removeMemory } from "./memory.mjs";
+import { describeSchedule, dueRoutines, nextRunAt, readRoutines, updateRoutine, validateRoutine, writeRoutines } from "./routines.mjs";
 import { createComposioClient, disconnectedApps } from "./connections.mjs";
 import { loginShellPath, startRunner } from "./runner-process.mjs";
 
@@ -338,9 +342,10 @@ let voice = null; // { worker, speaker }: the listener and Jarvis's own voice, e
 const ducker = createDucker();
 // Push-to-talk: listen without the wake phrase, for when music is louder than your voice.
 const LISTEN_SHORTCUT = "CommandOrControl+Shift+Space";
-// Hold Control to talk (macOS): a native watcher reports the key; voice/hold-key.mjs decides what counts as a hold.
-const CONTROL_KEY = path.join(directory, "native", "control-key");
-const controlKeyAvailable = process.platform === "darwin" && existsSync(CONTROL_KEY);
+// Hold Control to talk: a native watcher reports the key; voice/hold-key.mjs decides what counts as a hold. macOS runs
+// the compiled Swift helper; Windows runs a PowerShell script whose C# hook compiles at start (1–2 s before "ready").
+const CONTROL_KEY = process.platform === "win32" ? path.join(directory, "native", "control-key.ps1") : path.join(directory, "native", "control-key");
+const controlKeyAvailable = (process.platform === "darwin" || process.platform === "win32") && existsSync(CONTROL_KEY);
 let controlKey = null; // { child, hold } while voice is on and the setting allows it
 // Music stays ducked for the whole exchange: listening, thinking, Jarvis speaking, and the follow-up window after it.
 let workerState = "off";
@@ -389,7 +394,10 @@ function startControlKey() {
     end: () => voice?.worker.postMessage({ type: "release" }),
     cancel: () => voice?.worker.postMessage({ type: "release", cancel: true }),
   });
-  const child = spawn(CONTROL_KEY, [], { stdio: ["pipe", "pipe", "ignore"] });
+  const child =
+    process.platform === "win32"
+      ? spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", CONTROL_KEY], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true })
+      : spawn(CONTROL_KEY, [], { stdio: ["pipe", "pipe", "ignore"] });
   controlKey = { child, hold };
   let partial = "";
   child.stdout.setEncoding("utf8");
@@ -450,7 +458,7 @@ async function understand({ text, source, running, lastReply }) {
   const lookedUp = performance.now();
   let reply = parseUnderstanding("", text);
   if (model) {
-    const profile = await readProfile(app.getPath("userData"));
+    const profile = await userContext();
     const instructions = understandingInstructions({ now: new Date().toLocaleString(), source, running, lastReply, history: voiceHistory, personality: voicePrefs.personality, profile });
     try {
       const completed = await runOmp(["-p", "--no-tools", "--no-session", "--no-extensions", "--no-skills", "--no-rules", "--thinking", "off", "--model", model, "--system-prompt", instructions, text], 10_000);
@@ -459,7 +467,15 @@ async function understand({ text, source, running, lastReply }) {
       // Slow or offline: fall back to running the words as spoken.
     }
   }
-  if (reply.kind !== "ignore") {
+  // Remembering and scheduling happen here, so they work from voice and typing alike; the reply's say confirms it.
+  if (reply.kind === "remember") await addMemory(app.getPath("userData"), reply.prompt);
+  if (reply.kind === "schedule") {
+    const dir = app.getPath("userData");
+    const routine = validateRoutine({ prompt: reply.prompt, time: reply.time, days: reply.days, enabled: true });
+    await writeRoutines(dir, [...(await readRoutines(dir)), routine]);
+    reply = { ...reply, routineId: routine.id, schedule: describeSchedule(routine) };
+  }
+  if (reply.kind !== "ignore" && source !== "typed") {
     rememberTurn({ role: "user", text });
     rememberTurn({ role: "jarvis", text: reply.say, task: reply.prompt || undefined });
   }
@@ -467,11 +483,41 @@ async function understand({ text, source, running, lastReply }) {
   return reply;
 }
 
+/** The saved profile plus memories, for every prompt that talks to or about the user. */
+async function userContext() {
+  const dir = app.getPath("userData");
+  const [profile, memories] = await Promise.all([readProfile(dir), readMemories(dir)]);
+  return { ...profile, memories: memories.map((memory) => memory.text) };
+}
+
+// Routines are checked every 30 s. A due one waits in dueQueue until the window takes it and starts it like any task
+// in its own chat; with the window closed (macOS keeps the app running) one is opened for it.
+const dueQueue = [];
+async function checkRoutines() {
+  const dir = app.getPath("userData");
+  const routines = await readRoutines(dir);
+  const due = dueRoutines(routines, new Date());
+  if (due.length === 0) return;
+  const firedAt = new Date().toISOString();
+  await writeRoutines(dir, routines.map((routine) => (due.some((item) => item.id === routine.id) ? { ...routine, lastRunAt: firedAt } : routine)));
+  dueQueue.push(...due.map((routine) => ({ id: routine.id, prompt: routine.prompt, schedule: describeSchedule(routine) })));
+  const window = BrowserWindow.getAllWindows()[0];
+  if (window) window.webContents.send("routine:due");
+  else createWindow(); // the new window drains dueQueue once it has loaded
+}
+
+function routineViews(routines) {
+  const now = new Date();
+  return routines.map((routine) => ({ ...routine, schedule: describeSchedule(routine), nextRunAt: nextRunAt(routine, now)?.toISOString() ?? null }));
+}
+
 /** Judges something said or typed while a task runs: add to it, change it, queue a new one, stop it, or answer. */
 async function judgeFollowUp({ text, running, progress, paused }) {
+  const quick = quickFollowUp(text);
+  if (quick) return quick;
   const model = await lookUpUnderstandingModel();
   if (!model) return parseFollowUp("", text);
-  const profile = await readProfile(app.getPath("userData"));
+  const profile = await userContext();
   const instructions = followUpInstructions({ running, progress, paused, personality: voicePrefs.personality, profile });
   try {
     const completed = await runOmp(["-p", "--no-tools", "--no-session", "--no-extensions", "--no-skills", "--no-rules", "--thinking", "off", "--model", model, "--system-prompt", instructions, text], 10_000);
@@ -487,7 +533,7 @@ async function summarize(run) {
   const model = await lookUpUnderstandingModel();
   if (model) {
     try {
-      const instructions = resultInstructions(voicePrefs.personality, await readProfile(app.getPath("userData")));
+      const instructions = resultInstructions(voicePrefs.personality, await userContext());
       const completed = await runOmp(["-p", "--no-tools", "--no-session", "--no-extensions", "--no-skills", "--no-rules", "--thinking", "off", "--model", model, "--system-prompt", instructions, resultRequest(run)], 10_000);
       const line = completed.code === 0 ? parseSpokenLine(completed.stdout) : "";
       if (line) return line;
@@ -638,6 +684,37 @@ app.whenReady().then(() => {
     return { ok: true };
   });
 
+  // Settings → You → memories; the runner reads the same memory.json for every task.
+  handle("memory:list", async () => ({ ok: true, memories: await readMemories(app.getPath("userData")) }));
+  handle("memory:add", async (text) => ({ ok: true, memories: await addMemory(app.getPath("userData"), String(text ?? "")) }));
+  handle("memory:remove", async (id) => ({ ok: true, memories: await removeMemory(app.getPath("userData"), String(id ?? "")) }));
+
+  // Settings → Routines.
+  handle("routines:list", async () => ({ ok: true, routines: routineViews(await readRoutines(app.getPath("userData"))) }));
+  handle("routines:save", async (input) => {
+    const dir = app.getPath("userData");
+    const routines = await readRoutines(dir);
+    const existing = routines.find((item) => item.id === input?.id);
+    // Edits keep the routine's identity; re-enabling or moving its time doesn't fire it straight away.
+    const routine = existing ? updateRoutine(existing, { prompt: input.prompt, time: input.time, days: input.days, enabled: input.enabled }) : validateRoutine({ prompt: input?.prompt, time: input?.time, days: input?.days, enabled: input?.enabled ?? true });
+    await writeRoutines(dir, routines.some((item) => item.id === routine.id) ? routines.map((item) => (item.id === routine.id ? routine : item)) : [...routines, routine]);
+    return { ok: true, routines: routineViews(await readRoutines(dir)) };
+  });
+  handle("routines:remove", async (id) => {
+    const dir = app.getPath("userData");
+    await writeRoutines(dir, (await readRoutines(dir)).filter((item) => item.id !== id));
+    return { ok: true, routines: routineViews(await readRoutines(dir)) };
+  });
+  handle("routines:take-due", () => ({ ok: true, routines: dueQueue.splice(0) }));
+  // Typed text that looks like a routine or a memory goes through the model; anything else is a plain task (null).
+  handle("typed:understand", async (text) => {
+    const words = String(text ?? "").trim();
+    if (!words || !typedNeedsUnderstanding(words)) return { ok: true, reply: null };
+    return { ok: true, reply: await understand({ text: words, source: "typed", running: null, lastReply: null }) };
+  });
+  setInterval(() => void checkRoutines(), 30_000);
+  setTimeout(() => void checkRoutines(), 5_000); // after createWindow below, so a routine due at launch reuses that window
+
   handle("auth:save", async (updates) => {
     const clean = validateAuthUpdates(updates);
     await writeFile(envPath, upsertEnv(await readEnvFile(), clean), "utf8");
@@ -756,6 +833,13 @@ app.whenReady().then(() => {
     });
   }
 
+  // The agent asked something (a question or an approval); the answer reaches it before its next step.
+  handle("run:answer", async (runId, questionId, answer) => {
+    if (typeof runId !== "string" || !RUN_ID.test(runId)) return { ok: false, error: "There is no running task." };
+    const { status, payload } = await requestJson("POST", `/api/runs/${runId}/answer`, { questionId: String(questionId ?? ""), answer: String(answer ?? "") });
+    return status >= 400 ? { ok: false, error: runnerErrorText(payload) } : { ok: true };
+  });
+
   // Attachments: the renderer only ever holds paths; the runner reads (and copies) the files itself.
   handle("attach:pick", async (kind) => {
     const folder = kind === "folder";
@@ -808,7 +892,14 @@ app.whenReady().then(() => {
   registerConnectionHandlers();
 
   // Settings → Connections → Sign in to websites: a visible Chromium on the profile the runner's background browser reuses.
-  handle("browser:signin", (url) => openSignInBrowser({ url, userData: app.getPath("userData"), repoRoot }));
+  // A task step using the background browser finishes first; the window hears it is waiting so it can say so.
+  ipcMain.handle("browser:signin", async (event, url) => {
+    try {
+      return await openSignInBrowser({ url, userData: app.getPath("userData"), repoRoot, onWaiting: () => event.sender.send("browser:signin-waiting") });
+    } catch (error) {
+      return failure(error);
+    }
+  });
 
   // Desktop runs screenshot the whole screen, so the window minimizes while the agent works and returns afterwards.
   ipcMain.handle("window:step-aside", (event) => {

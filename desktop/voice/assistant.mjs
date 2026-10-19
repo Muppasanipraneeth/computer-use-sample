@@ -26,6 +26,7 @@ const SOURCES = {
   "push-to-talk": "The user pressed the talk shortcut, so these words are meant for you.",
   "barge-in": "The user talked over you while you were speaking, so these words are meant for you, often a correction.",
   "follow-up": "These words were heard right after you spoke, without the wake phrase: they may be a reply to you, or background sound (other people, a song, a video).",
+  typed: "The user typed this in the message box, so it is meant for you and has no recognition mistakes.",
 };
 
 // Who Jarvis is when it talks (Settings → Voice → Personality). Shared by the reply to a request and the line said
@@ -62,8 +63,8 @@ function persona(personality) {
 }
 
 /**
- * The "About the user" lines from their saved profile ({ name, callMe, location, about }), or [] when nothing is set.
- * Only what they wrote: a missing field stays missing, so the model never makes up a name or a city.
+ * The "About the user" lines from their saved profile ({ name, callMe, location, about, memories }), or [] when
+ * nothing is set. Only what they wrote: a missing field stays missing, so the model never makes up a name or a city.
  */
 export function aboutUser(profile) {
   const text = (value) => (typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "");
@@ -71,10 +72,13 @@ export function aboutUser(profile) {
   const callMe = text(profile?.callMe);
   const location = text(profile?.location);
   const about = text(profile?.about);
+  // Newest last; the cap keeps a long memory list from crowding out the instructions.
+  const memories = (Array.isArray(profile?.memories) ? profile.memories : []).map(text).filter(Boolean).slice(-30);
   const lines = [];
   if (callMe || name) lines.push(callMe && name && callMe !== name ? `Their name is ${name}; call them ${callMe}.` : `Call them ${callMe || name}.`);
   if (location) lines.push(`They live in ${location}; use it for weather, time and other local questions unless they name another place.`);
   if (about) lines.push(`Notes from them: ${about}`);
+  if (memories.length > 0) lines.push("Things they asked you to remember:", ...memories.map((memory) => `- ${memory}`));
   if (lines.length === 0) return [];
   return ["About the user (from their profile; don't assume anything it doesn't say):", ...lines];
 }
@@ -91,10 +95,13 @@ export function understandingInstructions({ now, source, running, lastReply, his
     "You are Jarvis, a voice assistant that does tasks on the user's computer through a desktop agent.",
     "The user's words come from speech recognition and may contain recognition mistakes; read them for what was meant.",
     "Reply with exactly one JSON object and nothing else:",
-    '{"kind":"task"|"answer"|"stop"|"cancel"|"ignore","say":"…","prompt":"…"}',
+    '{"kind":"task"|"answer"|"remember"|"schedule"|"stop"|"cancel"|"ignore","say":"…","prompt":"…","time":"HH:MM","days":[0,1,2,3,4,5,6]}',
+    '"time" and "days" only for "schedule"; leave them out otherwise.',
     '- "task": something to do on the computer or the web, including any question that needs current or live information (news, weather, prices, scores, anything recent): the agent can browse the web, so never say you can\'t check something. "say" is at most two short spoken sentences: what you will do, in first person, and (if your personality jokes) your quip. "prompt" is the task as a clear instruction for the desktop agent, keeping every detail the user gave; for a question, ask the agent to look it up and report the answer. A reply like "yes, do it" to a task you proposed is that task again.',
     '- "answer": a greeting, a question about you or the conversation, a request for a joke, a fact or motivation, or anything timeless you can answer without the computer. "say" is the spoken answer, at most three short sentences. "prompt" is "".',
     '- "stop": the user wants the running task stopped. "cancel": the user takes the request back. For both, "say" is a short confirmation and "prompt" is "".',
+    '- "remember": the user tells you to remember something about them or states a lasting preference ("remember I prefer Spotify", "my sister is called Asha"). "prompt" is that fact as a short note about the user ("Prefers Spotify over Apple Music"); "say" confirms in one short sentence.',
+    '- "schedule": the user wants something done regularly at a time ("every morning at 8 tell me the tech news", "on weekdays at 6 pm remind me to stretch"). "prompt" is the task to run each time, as a clear instruction for the desktop agent; "time" is 24-hour local "HH:MM"; "days" lists the weekdays it runs (0 is Sunday; every day is [0,1,2,3,4,5,6], weekdays [1,2,3,4,5]). "say" confirms when it will run. A one-off request for later ("tomorrow at 8") is not a schedule: answer that you can only set up repeating routines.',
     '- "ignore": the words are not meant for you (background talk, song lyrics, a video) or mean nothing. "say" and "prompt" are "".',
     persona(personality),
     "Personality goes only in say; prompt stays a plain, exact instruction.",
@@ -105,7 +112,8 @@ export function understandingInstructions({ now, source, running, lastReply, his
   ].join("\n");
 }
 
-const KINDS = new Set(["task", "answer", "stop", "cancel", "ignore"]);
+const KINDS = new Set(["task", "answer", "remember", "schedule", "stop", "cancel", "ignore"]);
+const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** Parses the model's reply; anything unusable falls back to running the words as spoken. */
 export function parseUnderstanding(stdout, transcript) {
@@ -122,8 +130,54 @@ export function parseUnderstanding(stdout, transcript) {
   const kind = KINDS.has(reply?.kind) ? reply.kind : null;
   const say = typeof reply?.say === "string" ? reply.say.replace(/\s+/g, " ").trim().slice(0, 300) : "";
   const prompt = typeof reply?.prompt === "string" ? reply.prompt.trim() : "";
-  if (!kind || (kind === "task" && !prompt) || (kind !== "ignore" && !say)) return fallback;
-  return { kind, say: kind === "ignore" ? "" : say, prompt: kind === "task" ? prompt : "", understood: true };
+  const needsPrompt = kind === "task" || kind === "remember" || kind === "schedule";
+  if (!kind || (needsPrompt && !prompt) || (kind !== "ignore" && !say)) return fallback;
+  if (kind === "schedule") {
+    const days = Array.isArray(reply.days) ? [...new Set(reply.days.filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))].sort() : [];
+    // Running "every morning…" once would be wrong, so an unreadable schedule asks the user to set it up by hand.
+    if (!CLOCK.test(reply.time ?? "") || days.length === 0) {
+      return { kind: "answer", say: "I couldn't tell when that should run. Set it up in Settings, under Routines.", prompt: "", understood: true };
+    }
+    return { kind, say, prompt, time: reply.time, days, understood: true };
+  }
+  return { kind, say: kind === "ignore" ? "" : say, prompt: needsPrompt ? prompt : "", understood: true };
+}
+
+// Typed text that may be a routine or something to remember goes through the model first; everything else starts
+// a task straight away, so ordinary prompts pay no extra latency.
+const ROUTINE_HINT = /\b(every|each)\s+(day|morning|evening|night|afternoon|week|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|hour)s?\b|\b(daily|weekdays|weekends|nightly)\b/i;
+const MEMORY_HINT = /^\s*(please\s+)?(remember|don't forget|note that|keep in mind)\b/i;
+export function typedNeedsUnderstanding(text) {
+  return ROUTINE_HINT.test(text) || MEMORY_HINT.test(text);
+}
+
+function capitalized(text) {
+  const trimmed = text.trim().replace(/^[,:;\s]+/, "");
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+/**
+ * Follow-ups whose meaning is obvious from their first words skip the model (about 2.5 s): "stop", "also …",
+ * "then …", "no, … instead". Questions and anything else return null and are judged by the model.
+ */
+export function quickFollowUp(text) {
+  const words = String(text ?? "").trim();
+  if (!words || words.endsWith("?")) return null;
+  if (/^(stop|cancel|abort|never ?mind|forget it)( it| that| the task| this)?[.!]*$/i.test(words)) return { kind: "stop", say: "Stopping.", message: "", understood: true };
+  const rest = (pattern) => {
+    const match = words.match(pattern);
+    return match ? capitalized(words.slice(match[0].length)) : "";
+  };
+  // A question word after the lead ("actually, what time is it") still goes to the model.
+  const question = (remainder) => /^(what|how|why|when|where|who|which|is|are|can|could|do|does|did|will|would)\b/i.test(remainder);
+  const added = rest(/^(also|and also|plus|oh and|oh,? also)\b[,:]?\s+/i);
+  if (added && !question(added)) return { kind: "add", say: "Got it, adding that.", message: added, understood: true };
+  const next = rest(/^(then|after that|afterwards|next|when you'?re done|once you'?re done|when done)\b[,:]?\s+/i);
+  if (next && !question(next)) return { kind: "queue", say: "Okay, I'll do that next.", message: next, understood: true };
+  // "No" needs its comma: "no, play Runaway" changes the plan, "no worries" doesn't.
+  const changed = rest(/^(?:(?:no|nope)[,!.]\s*|(?:actually|instead)\b,?\s+)/i);
+  if (changed && !question(changed)) return { kind: "redirect", say: "Okay, changing course.", message: changed, understood: true };
+  return null;
 }
 
 const FOLLOW_UP_KINDS = new Set(["add", "redirect", "queue", "stop", "answer"]);

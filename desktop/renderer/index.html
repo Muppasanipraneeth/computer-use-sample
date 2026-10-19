@@ -195,6 +195,7 @@
         <div class="tabs" role="tablist" aria-label="Settings sections">
           <button type="button" class="tab" role="tab" id="tab-voice" aria-controls="pane-voice" aria-selected="true"><span class="icon" data-icon="mic"></span>Voice</button>
           <button type="button" class="tab" role="tab" id="tab-you" aria-controls="pane-you" aria-selected="false"><span class="icon" data-icon="user"></span>You</button>
+          <button type="button" class="tab" role="tab" id="tab-routines" aria-controls="pane-routines" aria-selected="false"><span class="icon" data-icon="clock"></span>Routines</button>
           <button type="button" class="tab" role="tab" id="tab-connections" aria-controls="pane-connections" aria-selected="false"><span class="icon" data-icon="link"></span>Connections</button>
           <button type="button" class="tab" role="tab" id="tab-look" aria-controls="pane-look" aria-selected="false"><span class="icon" data-icon="sun"></span>Look</button>
           <button type="button" class="tab" role="tab" id="tab-accounts" aria-controls="pane-accounts" aria-selected="false"><span class="icon" data-icon="key"></span>Models</button>
@@ -216,7 +217,7 @@
               <span class="pref-text"><strong>Listen for “Hey Jarvis”</strong><span>Wake Jarvis by voice. When off, press <kbd id="pref-ptt-keys">⌘⇧Space</kbd> and talk.</span></span>
               <input type="checkbox" class="switch" role="switch" data-pref="wakeWord" />
             </label>
-            <label class="pref mac-only">
+            <label class="pref hold-key-pref">
               <span class="pref-text"><strong>Hold Control to talk</strong><span>Hold the Control key, say your request, let go. Works from any app while Voice is on; Ctrl+C and other shortcuts don't trigger it.</span></span>
               <input type="checkbox" class="switch" role="switch" data-pref="holdControl" />
             </label>
@@ -276,6 +277,40 @@
             <label class="field"><span>Where do you live?</span><input name="location" autocomplete="address-level2" placeholder="e.g. Hyderabad, India" maxlength="500" /></label>
             <label class="field"><span>Anything else Jarvis should know</span><textarea name="about" rows="4" maxlength="2000" placeholder="Work, interests, how you like answers, people and apps you use…"></textarea></label>
             <div class="form-actions"><span class="form-status" id="profile-status"></span><button type="button" class="button" id="profile-save">Save</button></div>
+          </div>
+          <div class="card">
+            <div class="pref-text"><strong>Things Jarvis remembers</strong><span>Say or type “remember …”, or add one here. Jarvis uses these in every chat and task.</span></div>
+            <ul class="app-list memory-list" id="memory-list"></ul>
+            <div class="inline-form">
+              <input id="memory-input" maxlength="300" placeholder="e.g. I prefer Spotify over Apple Music" aria-label="Something to remember" />
+              <button type="button" class="button" id="memory-add">Remember</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="pane" id="pane-routines" role="tabpanel" aria-labelledby="tab-routines" hidden>
+          <div class="card">
+            <div class="pref-text"><strong>Routines</strong><span>Tasks Jarvis runs by itself at set times, like “every morning at 8, tell me the tech news”. You can also just say or type that. They run while Jarvis is open; one missed while your Mac slept runs when it wakes (within 6 hours).</span></div>
+            <ul class="app-list routine-list" id="routine-list"></ul>
+          </div>
+          <div class="card routine-form" id="routine-form">
+            <div class="pref-text"><strong>New routine</strong></div>
+            <label class="field"><span>What should Jarvis do?</span><textarea id="routine-prompt" rows="2" maxlength="2000" placeholder="e.g. Tell me the top 3 tech stories"></textarea></label>
+            <div class="routine-when">
+              <label class="field"><span>At</span><input type="time" id="routine-time" value="08:00" /></label>
+              <div class="field"><span>On</span>
+                <div class="day-picker" id="routine-days" role="group" aria-label="Days">
+                  <label><input type="checkbox" value="1" checked /><span>Mon</span></label>
+                  <label><input type="checkbox" value="2" checked /><span>Tue</span></label>
+                  <label><input type="checkbox" value="3" checked /><span>Wed</span></label>
+                  <label><input type="checkbox" value="4" checked /><span>Thu</span></label>
+                  <label><input type="checkbox" value="5" checked /><span>Fri</span></label>
+                  <label><input type="checkbox" value="6" checked /><span>Sat</span></label>
+                  <label><input type="checkbox" value="0" checked /><span>Sun</span></label>
+                </div>
+              </div>
+            </div>
+            <div class="form-actions"><span class="form-status" id="routine-status"></span><button type="button" class="button" id="routine-add">Add routine</button></div>
           </div>
         </section>
 
