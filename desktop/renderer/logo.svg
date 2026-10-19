@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Jarvis">
+  <!-- "The Professor": an original, Notion-style line drawing of an old genius (wild hair, round glasses, big
+       moustache, a knowing smile). Jarvis is the wise old friend who knows things and figures things out for you,
+       with a twinkle in the eye for the jokes. One ink colour, white fills, flat lilac tile: no gradients. -->
+  <rect width="200" height="200" rx="52" fill="#F0D7FF"/>
+  <g fill="#FFFFFF" stroke="#1A1A1A" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <!-- jumper -->
+    <path d="M34 204c4-30 28-46 66-46s62 16 66 46"/>
+    <path d="M80 160c6 10 13 14 20 14s14-4 20-14"/>
+    <!-- wild hair: symmetric cloud with flyaway tufts -->
+    <path d="M56 108c-16 0-26-12-22-24-12-6-10-22 2-26-4-14 10-24 22-18 0-16 18-24 30-14 6-12 24-12 30 0 12-10 30-2 30 14 12-6 26 4 22 18 12 4 14 20 2 26 4 12-6 24-22 24"/>
+    <!-- face -->
+    <path d="M60 94c0-24 17-38 40-38s40 14 40 38v14c0 28-17 46-40 46s-40-18-40-46z"/>
+    <!-- ears -->
+    <path d="M60 104c-10-2-14 6-12 14s8 12 13 10"/>
+    <path d="M140 104c10-2 14 6 12 14s-8 12-13 10"/>
+  </g>
+  <g fill="none" stroke="#1A1A1A" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <!-- flyaway strands -->
+    <path d="M28 66l-10-6M30 92l-12 3M172 66l10-6M170 92l12 3M88 26l-3-10M114 26l4-10"/>
+    <!-- forehead line -->
+    <path d="M86 72c5 3 9 3 14 0s9-3 14 0"/>
+    <!-- bushy brows above the glasses -->
+    <path d="M68 86c6-6 14-7 20-3M112 83c6-4 14-3 20 3"/>
+    <!-- round glasses -->
+    <circle cx="82" cy="102" r="12"/>
+    <circle cx="118" cy="102" r="12"/>
+    <path d="M94 101c4-3 8-3 12 0"/>
+    <!-- smile below the moustache -->
+    <path d="M90 146c7 4 13 4 20 0"/>
+  </g>
+  <!-- eyes, a little to one side: a knowing look -->
+  <circle cx="84" cy="103" r="4" fill="#1A1A1A"/>
+  <circle cx="120" cy="103" r="4" fill="#1A1A1A"/>
+  <!-- moustache -->
+  <path d="M74 133c6-8 16-10 26-4 10-6 20-4 26 4-5 6-15 8-26 4-11 4-21 2-26-4z" fill="#1A1A1A"/>
+  <!-- the spark of an idea -->
+  <path d="M172 18c1.6 7 4 9.4 11 11-7 1.6-9.4 4-11 11-1.6-7-4-9.4-11-11 7-1.6 9.4-4 11-11z" fill="#FFA946" stroke="#1A1A1A" stroke-width="4" stroke-linejoin="round"/>
+</svg>

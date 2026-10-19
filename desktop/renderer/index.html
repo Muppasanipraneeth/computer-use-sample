@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' shot: data:; font-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jarvis</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <aside class="sidebar" aria-label="Workspace">
+        <div class="titlebar sidebar-top">
+          <div class="brand">
+            <img class="brand-mark" src="logo.svg" alt="" width="22" height="22" />
+            <span class="brand-name">Jarvis</span>
+          </div>
+        </div>
+        <div class="sidebar-scroll">
+          <button type="button" class="new-chat" id="new-chat">
+            <span class="icon" data-icon="edit"></span>
+            <span>New chat</span>
+            <kbd data-shortcut="N"></kbd>
+          </button>
+
+          <nav class="section" aria-labelledby="scenarios-heading">
+            <h2 class="section-title" id="scenarios-heading">Workspaces</h2>
+            <div class="scenario-list" id="scenario-list" role="listbox" aria-label="Workspace"></div>
+            <details class="labs" id="labs" hidden>
+              <summary class="labs-summary"><span class="icon scenario-icon" data-icon="flask" data-tone="peach"></span><span>Practice labs</span><span class="icon chevron" data-icon="chevron"></span></summary>
+              <div class="scenario-list" id="lab-list" role="listbox" aria-label="Practice lab"></div>
+            </details>
+          </nav>
+
+          <section class="section" aria-labelledby="chats-heading">
+            <h2 class="section-title" id="chats-heading">Chats</h2>
+            <ol class="recent-list" id="chat-list"></ol>
+          </section>
+
+          <section class="section" aria-labelledby="recent-heading">
+            <h2 class="section-title" id="recent-heading">This chat</h2>
+            <ol class="recent-list" id="recent-list"></ol>
+          </section>
+        </div>
+        <footer class="sidebar-foot">
+          <button type="button" class="status-row" id="runner-pill" title="Check the runner again">
+            <span class="dot"></span>
+            <span class="runner-text" id="runner-text">Connecting…</span>
+          </button>
+          <button type="button" class="status-row" id="account-pill" title="Accounts and API keys">
+            <span class="icon" data-icon="key"></span>
+            <span id="account-text">Checking accounts…</span>
+          </button>
+          <button type="button" class="icon-button" id="open-settings" aria-label="Settings">
+            <span class="icon" data-icon="gear"></span>
+          </button>
+        </footer>
+      </aside>
+
+      <main class="main">
+        <header class="titlebar main-top">
+          <div class="crumbs">
+            <span class="crumb-title" id="crumb-title">Jarvis</span>
+            <span class="crumb-sep" aria-hidden="true">/</span>
+            <span class="crumb-model" id="crumb-model">No model</span>
+          </div>
+          <button type="button" class="icon-button no-drag" id="toggle-screen" aria-label="Toggle screen panel" aria-pressed="true">
+            <span class="icon" data-icon="panel"></span>
+          </button>
+        </header>
+
+        <div class="thread-wrap">
+          <div class="thread" id="thread" aria-live="polite">
+            <div class="banner" id="offline-banner" hidden>
+              <span class="icon" data-icon="plug"></span>
+              <div>
+                <strong>Runner offline</strong>
+                <p>Start it from the repo root, then this window connects on its own.</p>
+              </div>
+              <button type="button" class="chip-button" id="copy-runner-command"><code>pnpm dev:python</code></button>
+            </div>
+            <div class="banner permissions" id="permissions-banner" hidden>
+              <span class="icon" data-icon="key"></span>
+              <div>
+                <strong>Let Jarvis use your Mac</strong>
+                <p id="permissions-text">macOS needs your OK before Jarvis can click, type and see the screen for tasks.</p>
+                <div class="permission-steps">
+                  <button type="button" class="chip-button" id="grant-accessibility"><span class="icon" data-icon="click"></span><span>1. Allow mouse &amp; keyboard</span></button>
+                  <button type="button" class="chip-button" id="grant-screen"><span class="icon" data-icon="monitor"></span><span>2. Allow screen recording</span></button>
+                  <button type="button" class="chip-button" id="relaunch-app" hidden><span class="icon" data-icon="retry"></span><span>3. Reopen Jarvis</span></button>
+                </div>
+              </div>
+            </div>
+            <section class="empty" id="empty-state">
+              <img class="empty-mark" src="logo.svg" alt="" width="64" height="64" />
+              <h1>What can I do for you?</h1>
+              <p class="empty-sub" id="empty-sub">Ask a question or give me a task. I work in the background, so you can keep using your Mac.</p>
+              <div class="suggestions" id="suggestions"></div>
+            </section>
+            <div class="run-list" id="run-list"></div>
+          </div>
+          <button type="button" class="jump" id="jump" hidden>
+            <span class="icon" data-icon="down"></span>
+            Latest
+          </button>
+        </div>
+
+        <form class="composer" id="composer">
+          <ol class="queue" id="queue" aria-label="Up next" hidden></ol>
+          <div class="composer-card" id="composer-card">
+            <ul class="attachments" id="attachments" aria-label="Attachments" hidden></ul>
+            <label class="visually-hidden" for="prompt">Command</label>
+            <textarea id="prompt" rows="1" placeholder="Ask Jarvis anything…" autocomplete="off" spellcheck="true"></textarea>
+            <div class="composer-bar">
+              <div class="composer-tools">
+                <div class="attach-wrap">
+                  <button type="button" class="attach-button" id="attach" aria-label="Attach images or a folder" aria-haspopup="menu" aria-expanded="false" title="Attach images or a folder (you can also drop or paste them)">
+                    <span class="icon" data-icon="paperclip"></span>
+                  </button>
+                  <div class="attach-menu" id="attach-menu" role="menu" hidden>
+                    <button type="button" role="menuitem" data-kind="image"><span class="icon" data-icon="image"></span>Images…</button>
+                    <button type="button" role="menuitem" data-kind="folder"><span class="icon" data-icon="folder"></span>Folder…</button>
+                  </div>
+                </div>
+                <label class="pill-select" title="Model">
+                  <select id="model" aria-label="Model"></select>
+                  <span class="icon pill-caret" data-icon="chevron"></span>
+                </label>
+                <button type="button" class="voice-chip" id="voice" aria-pressed="false" data-state="off" title="Voice control: turn on, then hold Control and talk (macOS), say “Hey Jarvis” and your task, or press ⌘⇧Space / Ctrl+Shift+Space and just talk">
+                  <span class="voice-mark"><span class="icon" data-icon="mic-fill"></span></span>
+                  <span id="voice-label">Voice</span>
+                </button>
+              </div>
+              <span class="composer-hint" id="composer-hint"></span>
+              <button type="button" class="pause" id="pause" aria-label="Pause the task" hidden>
+                <span class="icon" data-icon="pause-fill"></span>
+              </button>
+              <button type="submit" class="send" id="send" aria-label="Send">
+                <span class="icon" data-icon="send"></span>
+              </button>
+              <button type="button" class="stop" id="stop" aria-label="Stop the run" hidden>
+                <span class="stop-square"></span>
+              </button>
+            </div>
+          </div>
+        </form>
+      </main>
+
+      <aside class="screen" id="screen" aria-label="Live view">
+        <header class="titlebar screen-top">
+          <span class="screen-title">Live view</span>
+          <span class="live" id="live-badge" hidden><span class="live-dot"></span>Live</span>
+        </header>
+        <div class="screen-body">
+          <div class="viewport">
+            <div class="viewport-bar">
+              <span class="viewport-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="viewport-url" id="viewport-url">
+                <span class="icon" data-icon="globe" id="viewport-url-icon"></span>
+                <span id="viewport-url-text">Idle</span>
+              </span>
+            </div>
+            <button type="button" class="screen-frame" id="screen-frame" aria-label="Open the latest picture">
+              <img id="screen-image" alt="What Jarvis is looking at" hidden />
+              <div class="screen-placeholder" id="screen-placeholder">
+                <span class="icon" data-icon="globe"></span>
+                <p id="screen-placeholder-text">Pages Jarvis reads and anything it does on your screen show up here.</p>
+              </div>
+            </button>
+          </div>
+          <div class="now" id="now" hidden>
+            <span class="spinner"></span>
+            <span class="now-text" id="now-text"></span>
+          </div>
+          <div class="film" id="film"></div>
+          <dl class="stats" id="stats"></dl>
+        </div>
+      </aside>
+    </div>
+
+    <dialog class="sheet" id="settings">
+      <form method="dialog" class="sheet-body">
+        <header class="sheet-head">
+          <div>
+            <h2>Settings</h2>
+            <p>How Jarvis listens, talks and looks.</p>
+          </div>
+          <button type="submit" class="icon-button" aria-label="Close"><span class="icon" data-icon="close"></span></button>
+        </header>
+
+        <div class="tabs" role="tablist" aria-label="Settings sections">
+          <button type="button" class="tab" role="tab" id="tab-voice" aria-controls="pane-voice" aria-selected="true"><span class="icon" data-icon="mic"></span>Voice</button>
+          <button type="button" class="tab" role="tab" id="tab-you" aria-controls="pane-you" aria-selected="false"><span class="icon" data-icon="user"></span>You</button>
+          <button type="button" class="tab" role="tab" id="tab-connections" aria-controls="pane-connections" aria-selected="false"><span class="icon" data-icon="link"></span>Connections</button>
+          <button type="button" class="tab" role="tab" id="tab-look" aria-controls="pane-look" aria-selected="false"><span class="icon" data-icon="sun"></span>Look</button>
+          <button type="button" class="tab" role="tab" id="tab-accounts" aria-controls="pane-accounts" aria-selected="false"><span class="icon" data-icon="key"></span>Models</button>
+        </div>
+
+        <section class="pane" id="pane-voice" role="tabpanel" aria-labelledby="tab-voice">
+          <div class="card">
+            <div class="pref-text"><strong>Jarvis's voice</strong><span>Pick one and press Preview. Voices run on this Mac.</span></div>
+            <div class="voice-picker">
+              <label class="select-field">
+                <select id="voice-select" aria-label="Voice"></select>
+                <span class="icon" data-icon="chevron"></span>
+              </label>
+              <button type="button" class="button ghost" id="voice-preview"><span class="icon" data-icon="wave"></span>Preview</button>
+            </div>
+          </div>
+          <div class="card prefs">
+            <label class="pref">
+              <span class="pref-text"><strong>Listen for “Hey Jarvis”</strong><span>Wake Jarvis by voice. When off, press <kbd id="pref-ptt-keys">⌘⇧Space</kbd> and talk.</span></span>
+              <input type="checkbox" class="switch" role="switch" data-pref="wakeWord" />
+            </label>
+            <label class="pref mac-only">
+              <span class="pref-text"><strong>Hold Control to talk</strong><span>Hold the Control key, say your request, let go. Works from any app while Voice is on; Ctrl+C and other shortcuts don't trigger it.</span></span>
+              <input type="checkbox" class="switch" role="switch" data-pref="holdControl" />
+            </label>
+            <label class="pref">
+              <span class="pref-text"><strong>Speak replies out loud</strong><span>Jarvis answers in its voice. When off, replies only appear on screen.</span></span>
+              <input type="checkbox" class="switch" role="switch" data-pref="speakReplies" />
+            </label>
+            <label class="pref">
+              <span class="pref-text"><strong>Read results aloud when a task finishes</strong><span>Typed or spoken, you hear the answer when it's done.</span></span>
+              <input type="checkbox" class="switch" role="switch" data-pref="speakResults" />
+            </label>
+            <label class="pref">
+              <span class="pref-text"><strong>Confirm before doing a task</strong><span>Jarvis says what it's about to do; talk over it or press Esc to stop it.</span></span>
+              <input type="checkbox" class="switch" role="switch" data-pref="confirmTasks" />
+            </label>
+            <label class="pref">
+              <span class="pref-text"><strong>Keep listening after it answers</strong><span>Reply for a few seconds without saying “Hey Jarvis” again.</span></span>
+              <input type="checkbox" class="switch" role="switch" data-pref="followUp" />
+            </label>
+            <label class="pref">
+              <span class="pref-text"><strong>Pause music while we talk</strong><span>Pauses Spotify and Apple Music, and lowers other sound while listening.</span></span>
+              <input type="checkbox" class="switch" role="switch" data-pref="pauseMusic" />
+            </label>
+          </div>
+          <div class="card">
+            <div class="pref-text"><strong>Personality</strong><span>How Jarvis talks to you.</span></div>
+            <div class="segmented" role="radiogroup" aria-label="Personality" data-pref-group="personality">
+              <label><input type="radio" name="personality" value="witty" /><span>Witty &amp; sarcastic</span></label>
+              <label><input type="radio" name="personality" value="friendly" /><span>Friendly</span></label>
+              <label><input type="radio" name="personality" value="concise" /><span>Straight to the point</span></label>
+            </div>
+          </div>
+        </section>
+
+        <section class="pane" id="pane-look" role="tabpanel" aria-labelledby="tab-look" hidden>
+          <div class="card">
+            <div class="pref-text"><strong>Theme</strong><span>Warm paper by day, calm green by night, or follow your Mac.</span></div>
+            <div class="segmented" role="radiogroup" aria-label="Theme" data-pref-group="theme">
+              <label><input type="radio" name="theme" value="system" /><span>System</span></label>
+              <label><input type="radio" name="theme" value="light" /><span>Light</span></label>
+              <label><input type="radio" name="theme" value="dark" /><span>Dark</span></label>
+            </div>
+          </div>
+          <div class="card prefs">
+            <label class="pref">
+              <span class="pref-text"><strong>Show the Live view</strong><span>The panel on the right with the pages Jarvis reads and what it does on screen.</span></span>
+              <input type="checkbox" class="switch" role="switch" data-pref="screenOpen" />
+            </label>
+          </div>
+        </section>
+
+        <section class="pane" id="pane-you" role="tabpanel" aria-labelledby="tab-you" hidden>
+          <div class="card profile" id="profile-form">
+            <div class="pref-text"><strong>About you</strong><span>Jarvis uses this to talk to you and to do tasks your way, like checking the weather where you live. It stays on this Mac.</span></div>
+            <label class="field"><span>Your name</span><input name="name" autocomplete="name" placeholder="e.g. Praneeth" maxlength="500" /></label>
+            <label class="field"><span>What should Jarvis call you?</span><input name="callMe" placeholder="e.g. Pran, boss, Captain" maxlength="500" /></label>
+            <label class="field"><span>Where do you live?</span><input name="location" autocomplete="address-level2" placeholder="e.g. Hyderabad, India" maxlength="500" /></label>
+            <label class="field"><span>Anything else Jarvis should know</span><textarea name="about" rows="4" maxlength="2000" placeholder="Work, interests, how you like answers, people and apps you use…"></textarea></label>
+            <div class="form-actions"><span class="form-status" id="profile-status"></span><button type="button" class="button" id="profile-save">Save</button></div>
+          </div>
+        </section>
+
+        <section class="pane" id="pane-connections" role="tabpanel" aria-labelledby="tab-connections" hidden>
+          <div class="card">
+            <div class="card-head">
+              <div class="pref-text"><strong>Apps</strong><span id="connections-summary">Connect Gmail, Slack, X and more through Composio, so Jarvis can read and send for you.</span></div>
+              <button type="button" class="button ghost" id="connections-refresh">Refresh</button>
+            </div>
+            <div class="composio-key" id="composio-key" hidden>
+              <label class="field"><span>Composio API key (free at composio.dev → Settings → API keys)</span><input type="password" id="composio-key-input" autocomplete="off" spellcheck="false" placeholder="Paste the key…" /></label>
+              <button type="button" class="button" id="composio-key-save">Save key</button>
+            </div>
+            <ul class="app-list" id="app-list"></ul>
+          </div>
+          <div class="card">
+            <div class="pref-text"><strong>Sign in to websites</strong><span>For anything not connected above, Jarvis uses its own background browser. Sign in there once and it remembers you.</span></div>
+            <div class="site-list" id="site-list"></div>
+          </div>
+        </section>
+
+        <section class="pane" id="pane-accounts" role="tabpanel" aria-labelledby="tab-accounts" hidden>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h3>omp Accounts</h3>
+              <p id="omp-summary">Checking…</p>
+            </div>
+            <div class="card-actions">
+              <button type="button" class="button ghost" id="refresh-auth">Refresh</button>
+              <button type="button" class="button" id="login-omp">Log In with omp</button>
+            </div>
+          </div>
+          <ul class="model-list" id="omp-models"></ul>
+        </section>
+
+        <section class="card" id="key-cards"></section>
+        <p class="sheet-note">Keys are written to the repo's local <code>.env</code>; this window only sees whether one is saved. Restart the runner after saving a key.</p>
+        </section>
+      </form>
+    </dialog>
+
+    <dialog class="lightbox" id="lightbox">
+      <form method="dialog" class="lightbox-body">
+        <img id="lightbox-image" alt="Screenshot" />
+        <div class="lightbox-bar">
+          <button type="button" class="icon-button" id="lightbox-prev" aria-label="Previous screenshot"><span class="icon" data-icon="left"></span></button>
+          <span id="lightbox-count"></span>
+          <button type="button" class="icon-button" id="lightbox-next" aria-label="Next screenshot"><span class="icon" data-icon="right"></span></button>
+          <button type="submit" class="icon-button" aria-label="Close"><span class="icon" data-icon="close"></span></button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toasts" id="toasts" aria-live="polite"></div>
+
+    <script src="icons.js"></script>
+    <script src="markdown.js"></script>
+    <script src="voice.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,212 @@
+/*
+ * Jarvis design tokens.
+ * Components use only the semantic layer (surfaces, text, borders, accent, status, scales).
+ *
+ * The look is warm and editorial rather than "tech blue": cream paper and ink in light mode, a calm deep-green
+ * charcoal in dark mode, flat fills only (no gradients), a book serif for headings next to a friendly sans for UI,
+ * and three brand colours used sparingly: forest (actions), lilac (highlights), orange (the spark).
+ */
+
+@font-face {
+  font-family: "Figtree";
+  src: url("fonts/Figtree-Variable.woff2") format("woff2");
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "EB Garamond";
+  src: url("fonts/EBGaramond-Variable.woff2") format("woff2");
+  font-weight: 400 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "EB Garamond";
+  src: url("fonts/EBGaramond-Italic-Variable.woff2") format("woff2");
+  font-weight: 400 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("fonts/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: light dark;
+
+  /* Type */
+  --font-sans: "Figtree", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-serif: "EB Garamond", "Iowan Old Style", Georgia, serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+  --text-xs: 11px;
+  --text-sm: 12.5px;
+  --text-md: 13px;
+  --text-base: 14.5px;
+  --text-lg: 17px;
+  --text-xl: 22px;
+  --text-2xl: 40px;
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --tracking-tight: -0.01em;
+  --tracking-display: -0.025em;
+  --tracking-caps: 0.07em;
+
+  /* Space (4 px grid) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Shape: soft corners throughout. */
+  --radius-xs: 5px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-full: 999px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 280ms;
+
+  /* Layout */
+  --titlebar-height: 48px;
+  --sidebar-width: 264px;
+  --screen-width: 380px;
+  --content-width: 760px;
+
+  /* Brand */
+  --brand-ink: #1a1a1a;
+  --brand-cream: #fffdf4;
+  --brand-forest: #034f46;
+  --brand-lilac: #f0d7ff;
+  --brand-orange: #ffa946;
+
+  /* Dark theme (default): deep green-black charcoal with cream text, calm rather than stark. */
+  --bg-canvas: #141816;
+  --bg-sidebar: #101311;
+  --bg-raised: #1b201d;
+  --bg-sunken: #0d100f;
+  --bg-hover: rgb(255 253 244 / 0.05);
+  --bg-active: rgb(255 253 244 / 0.085);
+  --bg-backdrop: rgb(8 10 9 / 0.6);
+  --bg-media: #0a0c0b;
+
+  /* On canvas: fg 15.4:1, muted 10.6:1, subtle 6.4:1. */
+  --fg: #f4f1e6;
+  --fg-muted: #cdc9bc;
+  --fg-subtle: #9f9b8e;
+  --fg-inverse: #1a1a1a;
+
+  --border-subtle: rgb(255 253 244 / 0.07);
+  --border: rgb(255 253 244 / 0.11);
+  --border-strong: rgb(255 253 244 / 0.19);
+
+  /* Actions are lilac on dark (ink text on it 12.9:1); text accents use the same lilac (11.4:1 on canvas). */
+  --accent: #e2c4ff;
+  --accent-hover: #d6b0ff;
+  --accent-fg: #e2c4ff;
+  --fg-on-accent: #1a1a1a;
+  --accent-soft: rgb(226 196 255 / 0.13);
+  --accent-ring: rgb(226 196 255 / 0.5);
+  --spark: var(--brand-orange);
+  --bubble: #0f4d44;
+  --bubble-fg: #f4f1e6;
+
+  --success: #74d3a3;
+  --success-soft: rgb(116 211 163 / 0.14);
+  --warning: #f2b65a;
+  --warning-soft: rgb(242 182 90 / 0.14);
+  --danger: #ff8f7e;
+  --danger-soft: rgb(255 143 126 / 0.14);
+
+  /* Notion-style icon tiles: soft colour behind an ink glyph. */
+  --tile-lilac: #3a2f4a;
+  --tile-mint: #1f3a33;
+  --tile-peach: #45311f;
+  --tile-sky: #23324a;
+  --tile-ink: #f4f1e6;
+  --icon-tint: #e2c4ff;
+  --icon-tint-opacity: 0.32;
+
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-2: 0 1px 2px rgb(0 0 0 / 0.3), 0 10px 28px rgb(0 0 0 / 0.32);
+  --shadow-3: 0 24px 64px rgb(0 0 0 / 0.55);
+  /* Primary controls sit on the page like stickers: a hard offset, no blur. */
+  --shadow-sticker: 2px 2px 0 0 rgb(0 0 0 / 0.9);
+  --sticker-border: rgb(0 0 0 / 0.9);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    /* Cream paper, not white: the warmth is the point. */
+    --bg-canvas: #fffdf4;
+    --bg-sidebar: #f6f2e3;
+    --bg-raised: #fffefa;
+    --bg-sunken: #f3efdf;
+    --bg-hover: rgb(26 26 26 / 0.045);
+    --bg-active: rgb(26 26 26 / 0.075);
+    --bg-backdrop: rgb(26 26 26 / 0.32);
+    --bg-media: #1a1a1a;
+
+    /* On cream: fg 16.6:1, muted 8.3:1, subtle 5.2:1. */
+    --fg: #1a1a1a;
+    --fg-muted: #4a4943;
+    --fg-subtle: #6c695f;
+    --fg-inverse: #fffdf4;
+
+    --border-subtle: rgb(26 26 26 / 0.07);
+    --border: rgb(26 26 26 / 0.12);
+    --border-strong: rgb(26 26 26 / 0.22);
+
+    /* Actions are forest with cream text (10.2:1); text accents are forest too (9.9:1 on cream). */
+    --accent: var(--brand-forest);
+    --accent-hover: #023e37;
+    --accent-fg: var(--brand-forest);
+    --fg-on-accent: var(--brand-cream);
+    --accent-soft: rgb(240 215 255 / 0.75);
+    --accent-ring: rgb(3 79 70 / 0.35);
+    --bubble: var(--brand-lilac);
+    --bubble-fg: #1a1a1a;
+    --tile-lilac: #f0d7ff;
+    --tile-mint: #d5ebe4;
+    --tile-peach: #ffe1bd;
+    --tile-sky: #dbe7ff;
+    --tile-ink: #1a1a1a;
+    --icon-tint: #b783f2;
+    --icon-tint-opacity: 0.45;
+
+    --success: #19774a;
+    --success-soft: rgb(25 119 74 / 0.1);
+    --warning: #a25a08;
+    --warning-soft: rgb(255 169 70 / 0.18);
+    --danger: #b83a28;
+    --danger-soft: rgb(184 58 40 / 0.09);
+
+    --shadow-1: 0 1px 2px rgb(26 26 26 / 0.06);
+    --shadow-2: 0 1px 2px rgb(26 26 26 / 0.06), 0 10px 28px rgb(26 26 26 / 0.08);
+    --shadow-3: 0 24px 64px rgb(26 26 26 / 0.18);
+    --shadow-sticker: 2px 2px 0 0 #1a1a1a;
+    --sticker-border: #1a1a1a;
+  }
+}

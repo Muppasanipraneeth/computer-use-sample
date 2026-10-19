@@ -15,3 +15,8 @@ data/
 *.tsbuildinfo
 .env.*
 !.env.example
+
+# Jarvis-branded copy of Electron.app for development (desktop/scripts/start.mjs)
+desktop/.dev/
+# Compiled hold-to-talk Control-key watcher (desktop/scripts/bundle.mjs buildControlKey)
+desktop/native/control-key

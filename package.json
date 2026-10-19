@@ -1,5 +1,5 @@
 {
-  "name": "computer-use-sample",
+  "name": "jarvis",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.26.0",
@@ -7,18 +7,21 @@
     "dev": "node scripts/launch.mjs",
     "dev:js": "node scripts/launch.mjs javascript",
     "dev:python": "node scripts/launch.mjs python",
+    "desktop": "pnpm --filter @jarvis/desktop start",
+    "desktop:install": "node desktop/scripts/install-app.mjs",
+    "skills:sync": "node scripts/sync-agent-skills.mjs",
     "start:js": "node scripts/launch.mjs javascript --production",
     "start:python": "node scripts/launch.mjs python --production",
-    "lint": "eslint console javascript-app contracts scripts --max-warnings=0",
+    "lint": "eslint console javascript-app contracts scripts desktop --max-warnings=0",
     "typecheck": "pnpm -r --if-present typecheck",
-    "test": "pnpm -r --filter !cua-sample-labs test && node --test scripts/*.test.mjs",
+    "test": "pnpm -r --filter !jarvis-labs test && node --test scripts/*.test.mjs",
     "build": "pnpm -r --if-present build",
     "check:js": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "check:python": "uv run --project python-app ruff check python-app && uv run --project python-app mypy --config-file python-app/pyproject.toml python-app/app && uv run --project python-app pytest python-app/tests",
-    "check:labs": "pnpm --filter cua-sample-labs check",
+    "check:labs": "pnpm --filter jarvis-labs check",
     "check": "pnpm check:js && pnpm check:python && pnpm check:labs",
-    "playwright:install": "pnpm --filter @cua-sample/runner playwright:install",
-    "playwright:install:with-deps": "pnpm --filter @cua-sample/runner playwright:install:with-deps",
+    "playwright:install": "pnpm --filter @jarvis/runner playwright:install",
+    "playwright:install:with-deps": "pnpm --filter @jarvis/runner playwright:install:with-deps",
     "python:install": "uv sync --project python-app --frozen",
     "python:playwright:install": "uv run --project python-app playwright install chromium"
   },
@@ -41,6 +44,7 @@
     "vitest": "^3.2.7"
   },
   "pnpm": {
+    "onlyBuiltDependencies": ["electron", "esbuild"],
     "overrides": {
       "@humanfs/node@>=0.16 <0.16.8": "^0.16.8",
       "brace-expansion@>=1 <1.1.18": "^1.1.18",

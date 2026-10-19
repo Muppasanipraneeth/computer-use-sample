@@ -9,6 +9,9 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { files: ["**/*.{js,mjs,cjs,ts,tsx}"], languageOptions: { globals: { ...globals.browser, ...globals.node } } },
+  { files: ["desktop/preload.cjs"], rules: { "@typescript-eslint/no-require-imports": "off" } },
+  // Renderer files are classic <script>s sharing one global scope; each declares what it exports or consumes.
+  { files: ["desktop/renderer/**/*.js"], languageOptions: { sourceType: "script" } },
   {
     files: ["console/**/*.{ts,tsx}"],
     plugins: { "@next/next": nextPlugin, "react-hooks": reactHooks },
