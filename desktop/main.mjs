@@ -548,7 +548,9 @@ async function understand({ text, source, running, lastReply }) {
   reply = parseUnderstanding("", text);
   if (model) {
     const profile = await userContext();
-    const instructions = understandingInstructions({ now: new Date().toLocaleString(), source, running, lastReply, history: voiceHistory, personality: voicePrefs.personality, profile });
+    // The installed apps, so "open scroll" (a real mishearing of "open Chrome") becomes the app that sounds closest.
+    const installed = [...new Set(apps().values())];
+    const instructions = understandingInstructions({ now: new Date().toLocaleString(), source, running, lastReply, history: voiceHistory, personality: voicePrefs.personality, profile, apps: installed });
     try {
       const completed = await runOmp(["-p", "--no-tools", "--no-session", "--no-extensions", "--no-skills", "--no-rules", "--thinking", "off", "--model", model, "--system-prompt", instructions, text], 10_000);
       if (completed.code === 0) reply = parseUnderstanding(completed.stdout, text);

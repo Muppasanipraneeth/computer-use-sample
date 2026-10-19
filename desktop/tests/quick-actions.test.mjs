@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { checkQuickAction, matchQuickAction, runQuickAction } from "../quick-actions.mjs";
+import { checkQuickAction, installedApps, matchQuickAction, runQuickAction } from "../quick-actions.mjs";
 
 const withSpotify = new Map([["spotify", "Spotify"], ["slack", "Slack"], ["google chrome", "Google Chrome"], ["jarvis", "Jarvis"]]);
 const withoutSpotify = new Map([["slack", "Slack"]]);
@@ -35,6 +38,18 @@ test("open only names installed apps, with their real names; volume stays in ran
   assert.deepEqual(match("launch the google chrome app"), { do: "open", app: "Google Chrome" });
   assert.deepEqual(match("set the volume to 30%"), { do: "volume", level: 30 });
   assert.equal(match("volume 300"), null);
+});
+
+test("apps answer to what people call them and to how the recognizer spells them, for opening", () => {
+  const folder = mkdtempSync(path.join(os.tmpdir(), "apps-"));
+  for (const name of ["Google Chrome", "Slack", "Stats", "Safari", "Microsoft Word", "Jarvis"]) mkdirSync(path.join(folder, `${name}.app`));
+  const apps = installedApps([folder]);
+  assert.deepEqual(match("Open Chrome.", apps), { do: "open", app: "Google Chrome" }, "the name people say, not the bundle's");
+  assert.deepEqual(match("open word", apps), { do: "open", app: "Microsoft Word" });
+  assert.deepEqual(match("Open crime.", apps), { do: "open", app: "Google Chrome" }, "real mishearing that sounds the same");
+  assert.equal(match("open steam", apps), null, "sounds close to Stats, not the same: left to the model");
+  assert.equal(match("Quick crime.", apps), null, "quitting never guesses an app from sound");
+  assert.deepEqual(match("quit chrome", apps), { do: "quit", app: "Google Chrome" });
 });
 
 test("quit understands how the recognizer mishears it, but only for an installed app's exact name", () => {

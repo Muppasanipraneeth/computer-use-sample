@@ -18,7 +18,10 @@ const OTHER_PLAYERS = /\b(youtube|apple music|music app|itunes|netflix|prime vid
 const MULTI_STEP = /\b(?:and then|after that|and also|and (?:open|launch|read|summarize|send|write|play|search|find|check|tell|create|add))\b/i;
 const MUSIC_COLLECTION = /\b(?:album|playlist|mix|radio|station)\b/i;
 
-/** Lowercased name → real name of every app in the usual folders, read once. */
+// People say "Chrome", not "Google Chrome": an app named after its maker also answers to the rest of its name.
+const MAKER = /^(?:google|microsoft|adobe|mozilla|apple)\s+(.+)$/i;
+
+/** Lowercased name (and short name, "chrome") → real name of every app in the usual folders, read once. */
 export function installedApps(folders = defaultAppFolders()) {
   const apps = new Map();
   for (const folder of folders) {
@@ -30,7 +33,35 @@ export function installedApps(folders = defaultAppFolders()) {
     }
     for (const name of names) if (name.endsWith(".app")) apps.set(name.slice(0, -4).toLowerCase(), name.slice(0, -4));
   }
+  for (const name of [...apps.values()]) {
+    const short = MAKER.exec(name)?.[1].toLowerCase();
+    if (short && !apps.has(short)) apps.set(short, name);
+  }
   return apps;
+}
+
+/**
+ * Roughly how a word sounds, so the recognizer's spellings of a name it doesn't know match it: "crime" and "chrome"
+ * both become "krm". Consonants carry it; vowels after the first letter are dropped.
+ */
+function soundOf(text) {
+  const word = text.toLowerCase().replace(/[^a-z]/g, "")
+    .replace(/ph/g, "f").replace(/ch(?=r)|sch/g, "k").replace(/ck/g, "k").replace(/c(?=[eiy])/g, "s")
+    .replace(/[cq]/g, "k").replace(/x/g, "ks").replace(/z/g, "s").replace(/gh/g, "");
+  return (word.slice(0, 1) + word.slice(1).replace(/[aeiouyhw]/g, "")).replace(/(.)\1+/g, "$1");
+}
+
+/**
+ * The installed app a spoken name means: its exact (or short) name, else, for opening only, the one app that sounds
+ * the same ("Open crime." → Google Chrome, real output). Quitting never guesses: the wrong app could lose work.
+ */
+function appNamed(apps, name, { soundAlike = false } = {}) {
+  const exact = apps.get(name.toLowerCase());
+  if (exact || !soundAlike) return exact;
+  const sound = soundOf(name);
+  if (sound.length < 3) return undefined;
+  const same = new Set([...apps].filter(([key]) => soundOf(key) === sound).map(([, real]) => real));
+  return same.size === 1 ? [...same][0] : undefined;
 }
 
 function defaultAppFolders() {
@@ -72,9 +103,10 @@ export function matchQuickAction(text, apps, platform = process.platform) {
   const volume = words.match(/^(?:set (?:the )?)?volume(?: to)? (\d{1,3})(?:\s*%| percent)?$/i);
   if (volume && Number(volume[1]) <= 100) return { do: "volume", level: Number(volume[1]) };
   const open = words.match(/^(?:open|launch|start)\s+(?:the\s+)?(.+?)(?:\s+app)?$/i);
-  if (open && apps.has(open[1].toLowerCase())) return { do: "open", app: apps.get(open[1].toLowerCase()) };
+  const opening = open ? appNamed(apps, open[1], { soundAlike: true }) : undefined;
+  if (opening) return { do: "open", app: opening };
   const quit = words.replace(/,/g, "").match(QUIT); // "Quits, Spotify" (real output)
-  const quitting = quit ? apps.get(quit[1].toLowerCase()) : undefined;
+  const quitting = quit ? appNamed(apps, quit[1]) : undefined;
   if (quitting && quitting.toLowerCase() !== "jarvis") return { do: "quit", app: quitting };
   return null;
 }

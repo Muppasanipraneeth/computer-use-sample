@@ -86,9 +86,9 @@ export function aboutUser(profile) {
 /**
  * @param {{ now: string, source: string, running?: string | null, lastReply?: string | null,
  *   history?: { role: "user" | "jarvis", text: string, task?: string }[], personality?: string,
- *   profile?: { name?: string, callMe?: string, location?: string, about?: string } | null }} context
+ *   profile?: { name?: string, callMe?: string, location?: string, about?: string } | null, apps?: string[] }} context
  */
-export function understandingInstructions({ now, source, running, lastReply, history = [], personality, profile }) {
+export function understandingInstructions({ now, source, running, lastReply, history = [], personality, profile, apps = [] }) {
   const about = aboutUser(profile);
   const conversation = history.map((turn) => (turn.role === "user" ? `User: ${turn.text}` : `Jarvis: ${turn.text}${turn.task ? ` [task given to the agent: ${turn.task}]` : ""}`));
   return [
@@ -98,6 +98,9 @@ export function understandingInstructions({ now, source, running, lastReply, his
     '{"kind":"task"|"answer"|"remember"|"schedule"|"stop"|"cancel"|"ignore","say":"…","prompt":"…","quick":{…},"time":"HH:MM","days":[0,1,2,3,4,5,6]}',
     '"time" and "days" only for "schedule"; leave them out otherwise.',
     '"quick" only for a "task" that is exactly one command to run now without the agent: {"do":"play","query":"<song title> by <artist>"} (a named song in Spotify, include "by artist" when known), {"do":"pause"}, {"do":"resume"}, {"do":"next"}, {"do":"previous"}, {"do":"volume","level":0-100} (computer volume), {"do":"open","app":"<app name>"}, {"do":"quit","app":"<app name>"} (quit or close an app; speech recognition often writes "quit" as "quick" or "quite", so "quick the Slack app" means quit Slack). Correct clear speech-recognition mistakes in names, but do not guess an artist. Leave "quick" out for albums, playlists, genres, another service (YouTube/Apple Music), song lyrics, or requests containing another step.',
+    ...(apps.length > 0
+      ? [`Apps installed on this computer: ${apps.slice(0, 300).join(", ")}. App names are often misheard ("open scroll" or "urban crime" for open Chrome): for "open"/"quit", use the installed app whose name sounds closest to what was heard, spelled as listed; if none is close, or the words could as well mean something else, leave "quick" out.`]
+      : []),
     '- "task": something to do on the computer or the web, including any question that needs current or live information (news, weather, prices, scores, anything recent): the agent can browse the web, so never say you can\'t check something. "say" is at most two short spoken sentences: what you will do, in first person, and (if your personality jokes) your quip. "prompt" is the task as a clear instruction for the desktop agent, keeping every detail the user gave; for a question, ask the agent to look it up and report the answer. A reply like "yes, do it" to a task you proposed is that task again.',
     '- "answer": a greeting, a question about you or the conversation, a request for a joke, a fact or motivation, or anything timeless you can answer without the computer. "say" is the spoken answer, at most three short sentences. "prompt" is "".',
     '- "stop": the user wants the running task stopped. "cancel": the user takes the request back. For both, "say" is a short confirmation and "prompt" is "".',
