@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("desktop", {
   deleteRun: (runId) => ipcRenderer.invoke("run:delete", runId),
   copyDiagnostics: () => ipcRenderer.invoke("diagnostics:copy"),
   firstShow: () => ipcRenderer.invoke("app:first-show"),
+  welcomeVoice: (request) => ipcRenderer.invoke("welcome:voice", request),
   openLogs: () => ipcRenderer.invoke("logs:open"),
   searchRuns: (query) => ipcRenderer.invoke("runs:search", query),
   answerRun: (runId, questionId, answer) => ipcRenderer.invoke("run:answer", runId, questionId, answer),

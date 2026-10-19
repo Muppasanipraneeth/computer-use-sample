@@ -14,41 +14,13 @@
   <body>
     <!-- Shown from the first paint so the app never flashes before the welcome; main.js hides it at once when there's none. -->
     <div class="welcome" id="welcome" aria-hidden="true">
-      <!-- Heavily blurred bars sharing one gradient: taller ones reach the brighter colours, so the glow peaks in the middle. -->
-      <svg class="welcome-aurora" viewBox="0 0 1200 600" preserveAspectRatio="none" aria-hidden="true">
-        <defs>
-          <linearGradient id="aurora-fill" gradientUnits="userSpaceOnUse" x1="0" y1="600" x2="0" y2="0">
-            <stop class="aurora-1" offset="0" />
-            <stop class="aurora-2" offset="0.2" />
-            <stop class="aurora-3" offset="0.38" />
-            <stop class="aurora-4" offset="0.54" />
-            <stop class="aurora-5" offset="0.68" />
-            <stop class="aurora-6" offset="0.82" />
-            <stop class="aurora-7" offset="1" />
-          </linearGradient>
-          <filter id="aurora-blur" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="46" /></filter>
-        </defs>
-        <g fill="url(#aurora-fill)" filter="url(#aurora-blur)">
-          <rect x="-30" y="427" width="180" height="173" />
-          <rect x="60" y="402" width="180" height="198" />
-          <rect x="150" y="348" width="180" height="252" />
-          <rect x="240" y="257" width="180" height="343" />
-          <rect x="330" y="142" width="180" height="458" />
-          <rect x="420" y="41" width="180" height="559" />
-          <rect x="510" y="0" width="180" height="600" />
-          <rect x="600" y="41" width="180" height="559" />
-          <rect x="690" y="142" width="180" height="458" />
-          <rect x="780" y="257" width="180" height="343" />
-          <rect x="870" y="348" width="180" height="252" />
-          <rect x="960" y="402" width="180" height="198" />
-          <rect x="1050" y="427" width="180" height="173" />
-        </g>
-      </svg>
-      <div class="welcome-center">
-        <img class="welcome-logo" src="logo.svg" alt="" width="56" height="56" />
-        <h1 class="welcome-title"><span id="welcome-part"></span> <em class="welcome-name" id="welcome-name"></em></h1>
-        <p class="welcome-sub">Jarvis is here.</p>
+      <canvas class="welcome-particles" id="welcome-particles"></canvas>
+      <div class="welcome-face">
+        <span class="welcome-pulse"></span>
+        <img class="welcome-logo" src="logo.svg" alt="" width="220" height="220" />
       </div>
+      <p class="welcome-caption" id="welcome-caption"></p>
+      <canvas class="welcome-wave" id="welcome-wave"></canvas>
     </div>
     <div class="app" id="app">
       <aside class="sidebar" aria-label="Workspace">

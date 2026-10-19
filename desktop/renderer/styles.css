@@ -1153,53 +1153,52 @@ dialog::backdrop { background: var(--bg-backdrop); backdrop-filter: blur(6px); a
 .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--accent-soft); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
 .activity-icon .spinner { width: 14px; height: 14px; }
 
-/* ---------- welcome ---------- */
+/* ---------- welcome: "Jarvis arrives" ---------- */
 
-/* Launch, after Dia: an aurora of blurred bars rises from the floor, the greeting comes out of a blur with the name as
-   the one serif accent, then the aurora sinks and the app settles in. Jarvis's colours, not Dia's rainbow. */
+/* Points of light assemble the Professor on the canvas (welcome.js); at --face-top/--face-size the crisp logo takes
+   over, a ring pulses out, and the words appear as Jarvis says them. --level (0–1) is the voice's loudness. */
 .welcome {
-  --aurora-1: #0f4d44; --aurora-2: #1f8a7a; --aurora-3: #7cc8ff; --aurora-4: #fff7df; --aurora-5: #ffd166; --aurora-6: #ff7a45; --aurora-7: rgb(226 196 255 / 0);
-  position: fixed; inset: 0; z-index: 100; overflow: hidden; display: grid; place-items: center; background: var(--bg-canvas); cursor: pointer;
-}
-@media (prefers-color-scheme: light) {
-  .welcome { --aurora-1: #034f46; --aurora-2: #2a9d8f; --aurora-3: #8fd3ff; --aurora-4: #ffffff; --aurora-5: #ffd166; --aurora-6: #ff7a45; }
+  --welcome-bg: var(--bg-canvas);
+  --welcome-accent: var(--accent);
+  --level: 0;
+  --face-size: 200px;
+  --face-top: 30vh;
+  position: fixed; inset: 0; z-index: 100; overflow: hidden; background: var(--welcome-bg); cursor: pointer;
+  transition: background-color 0.55s ease 0.12s;
 }
 .welcome[hidden] { display: none; }
-.aurora-1 { stop-color: var(--aurora-1); }
-.aurora-2 { stop-color: var(--aurora-2); }
-.aurora-3 { stop-color: var(--aurora-3); }
-.aurora-4 { stop-color: var(--aurora-4); }
-.aurora-5 { stop-color: var(--aurora-5); }
-.aurora-6 { stop-color: var(--aurora-6); }
-.aurora-7 { stop-color: var(--aurora-7); }
-/* Base styles are each piece's resting state; before `.playing` lands (the first two frames) they wait hidden, and
-   each entrance animation fills backwards so it stays hidden through its own delay. */
-/* overflow: visible so the blur above the tallest bar fades out instead of stopping at a hard line (the overlay clips). */
-.welcome-aurora { position: absolute; left: -12%; bottom: -6%; width: 124%; height: 66%; overflow: visible; opacity: 0.9; transform-origin: 50% 100%; }
-.welcome-center { position: relative; display: grid; justify-items: center; gap: var(--space-3); margin-bottom: 18vh; text-align: center; }
-.welcome-logo { border-radius: 14px; box-shadow: 0 8px 22px rgb(0 0 0 / 0.18), inset 0 1px 0 rgb(255 255 255 / 0.6); }
-.welcome-title { margin: 0; font-family: var(--font-sans); font-weight: 300; font-size: clamp(38px, 5.2vw, 64px); line-height: 1.05; letter-spacing: -0.045em; color: var(--fg); }
-.welcome-title > span, .welcome-name { display: inline-block; }
-.welcome-name { font-family: var(--font-serif); font-style: italic; font-weight: 600; letter-spacing: -0.02em; }
-.welcome-name:empty { display: none; }
-.welcome-sub { margin: 0; font-size: var(--text-base); color: var(--fg-muted); letter-spacing: 0.01em; }
-.welcome:not(.playing):not(.calm) :is(.welcome-aurora, .welcome-logo, .welcome-title > span, .welcome-name, .welcome-sub) { opacity: 0; }
-.welcome.playing .welcome-aurora { animation: aurora-rise 1.5s cubic-bezier(0.16, 1, 0.3, 1) backwards, aurora-breathe 3.2s ease-in-out 1.5s infinite alternate; }
-.welcome.playing .welcome-logo { animation: blur-in 0.7s var(--ease-out) 0.25s backwards; }
-.welcome.playing .welcome-title > span { animation: blur-in 0.8s var(--ease-out) 0.5s backwards; }
-.welcome.playing .welcome-name { animation: blur-in 0.8s var(--ease-out) 0.8s backwards; }
-.welcome.playing .welcome-sub { animation: blur-in 0.7s var(--ease-out) 1.15s backwards; }
-.welcome.leaving { opacity: 0; transition: opacity 0.6s ease 0.1s; }
-.welcome.leaving .welcome-aurora { transform: scaleY(0); opacity: 0; transition: transform 0.7s cubic-bezier(0.7, 0, 0.84, 0), opacity 0.6s ease; animation: none; }
-.welcome.leaving .welcome-center { transform: scale(0.97); filter: blur(6px); transition: transform 0.6s ease, filter 0.6s ease; }
-.welcome.calm .welcome-aurora { opacity: 0.85; }
-.welcome.calm.leaving { transition-duration: 0.15s; }
-/* The app settles into place as the welcome fades. */
-body.arrived .app { animation: settle 0.7s var(--ease-out); }
-@keyframes aurora-rise { from { opacity: 0; transform: scaleY(0); } 40% { opacity: 0.9; } to { opacity: 0.9; transform: scaleY(1); } }
-@keyframes aurora-breathe { from { opacity: 0.9; transform: scaleY(1); } to { opacity: 0.78; transform: scaleY(0.93); } }
-@keyframes blur-in { from { opacity: 0; filter: blur(14px); transform: translateY(10px); } to { opacity: 1; filter: blur(0); transform: none; } }
-@keyframes settle { from { opacity: 0; transform: scale(0.985); filter: blur(4px); } }
+.welcome-particles { position: absolute; inset: 0; width: 100%; height: 100%; transition: opacity 0.35s ease; }
+.welcome-face { position: absolute; left: 50%; top: var(--face-top); width: var(--face-size); height: var(--face-size); transform: translateX(-50%); }
+.welcome-logo {
+  position: relative; display: block; width: 100%; height: 100%; border-radius: 22%; opacity: 0; transform: scale(0.96);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.28), 0 0 calc(18px + var(--level) * 70px) color-mix(in srgb, var(--welcome-accent) calc(25% + var(--level) * 50%), transparent);
+  transition: opacity 0.35s ease, transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.welcome.formed .welcome-logo { opacity: 1; transform: none; }
+.welcome-pulse { position: absolute; inset: -6%; border-radius: 30%; border: 2px solid var(--welcome-accent); opacity: 0; pointer-events: none; }
+.welcome.formed:not(.calm) .welcome-pulse { animation: face-pulse 1.1s cubic-bezier(0.2, 0.7, 0.2, 1) forwards; }
+.welcome-caption {
+  position: absolute; left: 50%; top: calc(var(--face-top) + var(--face-size) + 34px); width: min(90vw, 900px); transform: translateX(-50%);
+  margin: 0; text-align: center; font-family: var(--font-sans); font-weight: 300; font-size: clamp(30px, 4.2vw, 52px);
+  line-height: 1.15; letter-spacing: -0.04em; color: var(--fg);
+}
+.welcome-word { display: inline-block; margin: 0 0.12em; opacity: 0; filter: blur(10px); transform: translateY(8px); transition: opacity 0.42s ease, filter 0.5s ease, transform 0.5s var(--ease-out); }
+.welcome-word.shown { opacity: 1; filter: none; transform: none; }
+.welcome-word.name { font-family: var(--font-serif); font-style: italic; font-weight: 600; letter-spacing: -0.02em; }
+.welcome-word.signature { font-size: 0.42em; font-weight: 400; letter-spacing: 0; color: var(--fg-muted); margin-top: 0.6em; }
+.welcome-wave { position: absolute; left: 50%; top: calc(var(--face-top) + var(--face-size) + 34px + clamp(30px, 4.2vw, 52px) * 2.3 + 30px); width: 240px; height: 40px; transform: translateX(-50%); opacity: 0; transition: opacity 0.4s ease; }
+.welcome.formed .welcome-wave { opacity: 1; }
+/* Leaving: the backdrop lifts and the words, wave and points fade; the logo itself flies (welcome.js). */
+.welcome.leaving { background-color: transparent; pointer-events: none; }
+.welcome.leaving :is(.welcome-particles, .welcome-caption, .welcome-wave, .welcome-pulse) { opacity: 0; transition: opacity 0.25s ease; }
+.welcome.calm .welcome-logo { transition: opacity 0.3s ease; }
+.welcome.calm.leaving .welcome-logo { opacity: 0; }
+/* The app settles in behind the flying face: sidebar, then the conversation, then the live view. */
+body.arrived .sidebar { animation: settle 0.6s var(--ease-out) 0.1s backwards; }
+body.arrived .main { animation: settle 0.6s var(--ease-out) 0.18s backwards; }
+body.arrived .screen { animation: settle 0.6s var(--ease-out) 0.26s backwards; }
+@keyframes face-pulse { from { opacity: 0.9; transform: scale(0.92); } to { opacity: 0; transform: scale(1.9); border-width: 1px; } }
+@keyframes settle { from { opacity: 0; transform: translateY(8px) scale(0.99); filter: blur(3px); } }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 50% { opacity: 0.35; } }

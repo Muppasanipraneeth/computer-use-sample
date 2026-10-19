@@ -1,4 +1,4 @@
-/* global cancelVoicePending, stopSpeaking, $, stepGallery, bridge, newChat, openSettings, stopRun, state, greetingLine, playWelcome, inConversation, say, hydrateIcons, mod, renderRunner, renderScenarios, renderAccounts, renderRecent, renderChats, renderWorkspaces, renderQueue, renderHeader, renderEmpty, renderScreen, renderComposer, applyPrefs, loadAuth, enableVoice, checkRunner, checkPermissions, runDueRoutines, pollLive, isRunning, renderRun, screenRun, clock, elapsed */
+/* global cancelVoicePending, stopSpeaking, $, stepGallery, bridge, newChat, openSettings, stopRun, state, partOfDay, playWelcome, inConversation, say, hydrateIcons, mod, renderRunner, renderScenarios, renderAccounts, renderRecent, renderChats, renderWorkspaces, renderQueue, renderHeader, renderEmpty, renderScreen, renderComposer, applyPrefs, loadAuth, enableVoice, checkRunner, checkPermissions, runDueRoutines, pollLive, isRunning, renderRun, screenRun, clock, elapsed */
 // Keyboard shortcuts, the welcome, and boot. Loads last: everything here runs at once.
 
 /* ---------- keyboard shortcuts ---------- */
@@ -34,20 +34,21 @@ const HELLOS = {
   concise: ["Jarvis is here."],
 };
 
-/** What Jarvis says when it opens: the time of day, its hello, and anything that happened while the window was shut. */
-function spokenGreeting(name) {
-  const hellos = HELLOS[state.prefs.personality] ?? HELLOS.witty;
+/** Anything that happened while the window was shut, to say once the intro is over (or "" when nothing did). */
+function awayNews() {
   const finished = state.chats.filter((chat) => chat.unread).length;
   const working = state.live.size;
-  const news = [
+  return [
     finished ? `${finished} task${finished === 1 ? "" : "s"} finished while you were away.` : "",
     working ? `${working} task${working === 1 ? " is" : "s are"} still running.` : "",
-  ].filter(Boolean);
-  return [`${greetingLine(name)}.`, hellos[Math.floor(Math.random() * hellos.length)], ...news].join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
-// The welcome plays once per launch (not when a closed window is reopened). The voice needs its models loaded, so
-// the hello waits for the engine to be listening, up to 25 s, and then opens the follow-up window for a reply.
+// The intro plays once per launch (not when a closed window is reopened). Its spoken hello is the cached recording,
+// so it plays even with Voice off; the main process renders it in the background the first time, so on the very first
+// launch the intro has only its chime, and with Voice on the hello is spoken live once the engine is listening.
 async function welcome() {
   const overlay = $("#welcome");
   const first = await bridge.firstShow?.().catch(() => false);
@@ -55,14 +56,19 @@ async function welcome() {
   if (!first) return;
   const profile = await bridge.getProfile?.().catch(() => null);
   const name = (profile?.callMe || profile?.name || "").trim();
-  if (state.prefs.welcome) await playWelcome({ name, sound: true });
+  const recorded = state.prefs.greet ? await bridge.welcomeVoice?.({ part: partOfDay(), name }).catch(() => null) : null;
+  const voice = recorded?.ok ? recorded : null;
+  if (state.prefs.welcome) await playWelcome({ name, sound: true, voice });
   if (!state.prefs.greet || !state.voiceOn) return;
+  const hellos = HELLOS[state.prefs.personality] ?? HELLOS.witty;
+  const line = [voice ? "" : `${partOfDay()}${name ? `, ${name}` : ""}. ${hellos[Math.floor(Math.random() * hellos.length)]}`, awayNews()].filter(Boolean).join(" ");
+  if (!line) return;
   for (let waited = 0; waited < 25_000 && state.voice !== "listening"; waited += 300) {
     if (state.voice === "off" && !state.voiceOn) return;
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
   // Not over a task's result or the user already talking.
-  if (state.voice === "listening" && !state.voicePhase) void inConversation(() => say(spokenGreeting(name)));
+  if (state.voice === "listening" && !state.voicePhase) void inConversation(() => say(line));
 }
 
 /* ---------- boot ---------- */

@@ -43,7 +43,7 @@ import {
 import { parseVoiceCommand } from "./voice/commands.mjs";
 import { createDucker } from "./voice/ducking.mjs";
 import { createHoldKey, HOLD_MS } from "./voice/hold-key.mjs";
-import { ensureVoiceModels } from "./voice/models.mjs";
+import { ensureVoiceModels, voiceModelPaths } from "./voice/models.mjs";
 import { DEFAULT_VOICE, findVoice, VOICES } from "./voice/voices.mjs";
 import { readProfile, writeProfile } from "./profile.mjs";
 import { addMemory, readMemories, removeMemory } from "./memory.mjs";
@@ -51,6 +51,7 @@ import { describeSchedule, dueRoutines, nextRunAt, readRoutines, updateRoutine, 
 import { createComposioClient, disconnectedApps } from "./connections.mjs";
 import { devRunner, loginShellPath, prepareRunner, standaloneRunner, startRunner } from "./runner-process.mjs";
 import { createLogger, logDirectory, redact, tailFile } from "./logger.mjs";
+import { greetingKey, greetingText, joinChunks, PARTS_OF_DAY, pruneGreetings, readGreeting, writeGreeting } from "./greeting-voice.mjs";
 
 // desktop.log beside the runner's runner.log; "Copy diagnostics" in Settings bundles the tail of both.
 const log = createLogger();
@@ -575,6 +576,107 @@ async function summarize(run) {
   return spokenSummary(run);
 }
 
+// ---------- the intro's spoken greeting ----------
+
+// Chunks of a greeting being rendered go to its collector, never to the window's speakers.
+const greetingJobs = new Map();
+let nextGreetingId = 1;
+
+/** `forward` passes ordinary reply chunks on to the window; a short-lived greeting engine has none. */
+function routeChunk(message, forward = () => {}) {
+  const job = greetingJobs.get(message.id);
+  if (job) job(message);
+  else forward(message);
+}
+
+function renderOn(speaker, text) {
+  return new Promise((resolve, reject) => {
+    const id = `greeting-${nextGreetingId++}`;
+    const chunks = [];
+    const timer = setTimeout(() => {
+      greetingJobs.delete(id);
+      reject(new Error("rendering the greeting took too long"));
+    }, 30_000);
+    greetingJobs.set(id, (message) => {
+      if (message.error) {
+        clearTimeout(timer);
+        greetingJobs.delete(id);
+        reject(new Error(message.error));
+        return;
+      }
+      chunks.push(message.samples);
+      if (!message.last) return;
+      clearTimeout(timer);
+      greetingJobs.delete(id);
+      resolve({ samples: joinChunks(chunks), sampleRate: message.sampleRate });
+    });
+    speaker.postMessage({ type: "speak", id, text });
+  });
+}
+
+/** The running voice engine, or a short-lived one just for rendering when Voice is off. */
+function greetingSpeaker(paths) {
+  if (voice?.speaker) return Promise.resolve({ speaker: voice.speaker, temporary: false });
+  return new Promise((resolve, reject) => {
+    const speaker = utilityProcess.fork(path.join(directory, "voice", "speaker.mjs"), [], { serviceName: "Jarvis voice (greeting)" });
+    const timer = setTimeout(() => {
+      speaker.kill();
+      reject(new Error("the voice engine didn't start"));
+    }, 20_000);
+    speaker.on("message", (message) => {
+      if (message.type === "ready") {
+        clearTimeout(timer);
+        resolve({ speaker, temporary: true });
+      } else if (message.type === "error") {
+        clearTimeout(timer);
+        speaker.kill();
+        reject(new Error(message.message));
+      } else if (message.type === "chunk") routeChunk(message);
+    });
+    speaker.postMessage({ type: "voice", id: voicePrefs.voice });
+    speaker.postMessage({ type: "init", paths });
+  });
+}
+
+function greetingDirectory() {
+  return path.join(app.getPath("userData"), "greetings");
+}
+
+// Renders whichever of the four parts of the day are missing for this name and voice. Only with the voice models
+// already on disk: the intro must never start a 400 MB download.
+let greetingRender = null;
+function renderGreetings(name) {
+  greetingRender ??= (async () => {
+    const paths = voiceModelPaths(path.join(app.getPath("userData"), "voice-models"));
+    if (!existsSync(paths.tts.model) || !existsSync(paths.tts.voices)) return;
+    const dir = greetingDirectory();
+    const jobs = PARTS_OF_DAY.map((part) => {
+      const text = greetingText(part, name);
+      return { text, key: greetingKey(voicePrefs.voice, text) };
+    });
+    await pruneGreetings(dir, jobs.map((job) => job.key));
+    const missing = [];
+    for (const job of jobs) if (!(await readGreeting(dir, job.key))) missing.push(job);
+    if (missing.length === 0) return;
+    const started = performance.now();
+    const { speaker, temporary } = await greetingSpeaker(paths);
+    try {
+      for (const job of missing) {
+        const { samples, sampleRate } = await renderOn(speaker, job.text);
+        if (samples.length > 0) await writeGreeting(dir, job.key, samples, sampleRate);
+      }
+    } finally {
+      if (temporary) speaker.kill();
+    }
+    log.info(`welcome voice: rendered ${missing.length} greeting(s) in ${((performance.now() - started) / 1000).toFixed(1)} s`);
+  })()
+    .catch((error) => log.warn("welcome voice: couldn't render the greeting", error))
+    .finally(() => {
+      greetingRender = null;
+    });
+  return greetingRender;
+}
+
 async function startVoice(owner) {
   if (voice) return { ok: true };
   if (process.platform === "darwin" && !(await systemPreferences.askForMediaAccess("microphone"))) {
@@ -616,7 +718,7 @@ async function startVoice(owner) {
     speaker.on("message", (message) => {
       if (message.type === "ready") resolve({ ok: true });
       else if (message.type === "error") resolve({ ok: false, error: message.message });
-      else if (message.type === "chunk") send("voice:speech", message);
+      else if (message.type === "chunk") routeChunk(message, (chunk) => send("voice:speech", chunk));
     });
     speaker.once("exit", (code) => {
       failed(code, voice?.speaker === speaker);
@@ -711,6 +813,16 @@ app.whenReady().then(() => {
   // Settings → Voice: the English Kokoro speakers Jarvis can talk with. The choice comes back through voice:prefs.
   ipcMain.handle("voice:list", () => VOICES.map(({ id, name, accent, gender }) => ({ id, name, accent, gender })));
 
+  // The cached spoken greeting for the intro, if rendered yet; either way the set is (re)rendered a little later,
+  // out of the way of the intro and the voice engine starting.
+  handle("welcome:voice", async (request) => {
+    const part = PARTS_OF_DAY.includes(request?.part) ? request.part : PARTS_OF_DAY[0];
+    const name = typeof request?.name === "string" ? request.name : "";
+    const text = greetingText(part, name);
+    setTimeout(() => void renderGreetings(name), 8_000);
+    const cached = await readGreeting(greetingDirectory(), greetingKey(voicePrefs.voice, text));
+    return cached ? { ok: true, text, samples: cached.samples, sampleRate: cached.sampleRate } : { ok: false, text };
+  });
   // The welcome plays once per app launch: on macOS closing the window keeps Jarvis running, and reopening it
   // shouldn't greet again.
   let welcomed = false;
