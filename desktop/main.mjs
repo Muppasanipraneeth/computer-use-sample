@@ -52,6 +52,7 @@ import { createComposioClient, disconnectedApps } from "./connections.mjs";
 import { devRunner, loginShellPath, prepareRunner, standaloneRunner, startRunner } from "./runner-process.mjs";
 import { createLogger, logDirectory, redact, tailFile } from "./logger.mjs";
 import { greetingKey, greetingText, joinChunks, PARTS_OF_DAY, pruneGreetings, readGreeting, writeGreeting } from "./greeting-voice.mjs";
+import { createAvatar } from "./avatar-window.mjs";
 
 // desktop.log beside the runner's runner.log; "Copy diagnostics" in Settings bundles the tail of both.
 const log = createLogger();
@@ -294,6 +295,21 @@ function themeColors() {
 
 const APP_ICON = path.join(directory, "assets", "icon.png");
 
+// The app's one real window. The floating face is a second BrowserWindow, so nothing may treat "all windows" as this.
+let mainWindow = null;
+
+/** Brings Jarvis to the front (opening the window if it was closed): the floating face's click. */
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  mainWindow.restore();
+  mainWindow.show();
+  if (process.platform === "darwin") app.focus({ steal: true });
+  mainWindow.focus();
+}
+
 function createWindow() {
   const colors = themeColors();
   const mac = process.platform === "darwin";
@@ -329,6 +345,12 @@ function createWindow() {
   });
   window.webContents.on("will-navigate", (event) => event.preventDefault());
   window.loadFile(path.join(directory, "renderer", "index.html"));
+  mainWindow = window;
+  window.on("closed", () => {
+    if (mainWindow === window) mainWindow = null;
+    // The hidden floating face would otherwise keep the app alive where closing the window means quitting.
+    if (process.platform !== "darwin") app.quit();
+  });
   return window;
 }
 
@@ -401,13 +423,17 @@ function syncDucking() {
 }
 
 // Settings → Voice. The window owns them (localStorage) and sends them on start and on every change.
-const voicePrefs = { wakeWord: true, followUp: true, pauseMusic: true, holdControl: true, personality: "witty", voice: DEFAULT_VOICE };
+const voicePrefs = { wakeWord: true, followUp: true, pauseMusic: true, holdControl: true, floatingFace: true, personality: "witty", voice: DEFAULT_VOICE };
+// The floating Jarvis face (avatar-window.mjs), created once the app is ready.
+let avatar = null;
 
 function applyVoicePrefs(prefs) {
   if (typeof prefs?.wakeWord === "boolean") voicePrefs.wakeWord = prefs.wakeWord;
   if (typeof prefs?.followUp === "boolean") voicePrefs.followUp = prefs.followUp;
   if (typeof prefs?.pauseMusic === "boolean") voicePrefs.pauseMusic = prefs.pauseMusic;
   if (typeof prefs?.holdControl === "boolean") voicePrefs.holdControl = prefs.holdControl;
+  if (typeof prefs?.floatingFace === "boolean") voicePrefs.floatingFace = prefs.floatingFace;
+  avatar?.setEnabled(voicePrefs.floatingFace);
   if (["witty", "friendly", "concise"].includes(prefs?.personality)) voicePrefs.personality = prefs.personality;
   if (findVoice(prefs?.voice)) voicePrefs.voice = prefs.voice;
   voice?.worker.postMessage({ type: "prefs", wakeWord: voicePrefs.wakeWord, followUp: voicePrefs.followUp });
@@ -533,7 +559,7 @@ async function checkRoutines() {
   const firedAt = new Date().toISOString();
   await writeRoutines(dir, routines.map((routine) => (due.some((item) => item.id === routine.id) ? { ...routine, lastRunAt: firedAt } : routine)));
   dueQueue.push(...due.map((routine) => ({ id: routine.id, prompt: routine.prompt, schedule: describeSchedule(routine) })));
-  const window = BrowserWindow.getAllWindows()[0];
+  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
   if (window) window.webContents.send("routine:due");
   else createWindow(); // the new window drains dueQueue once it has loaded
 }
@@ -795,6 +821,14 @@ app.whenReady().then(() => {
     syncDucking();
   });
   ipcMain.on("voice:prefs", (_event, prefs) => applyVoicePrefs(prefs));
+  // The floating face follows the conversation (voice state, what Jarvis says, his voice level) and background tasks.
+  avatar = createAvatar({ directory, userData: app.getPath("userData"), onOpen: showMainWindow, log });
+  avatar.setEnabled(voicePrefs.floatingFace);
+  ipcMain.on("avatar:voice", (_event, payload) => avatar.voice(payload));
+  ipcMain.on("avatar:task", (_event, task, text, outcome) => avatar.task(typeof task === "string" ? task : null, typeof text === "string" ? text : "", typeof outcome === "string" ? outcome : null));
+  ipcMain.on("avatar:level", (_event, level, source) => {
+    if (Number.isFinite(level)) avatar.level(Math.max(0, Math.min(1, level)), source === "mic" ? "mic" : "speech");
+  });
   // Settings → Appearance: "system" follows macOS/Windows; the renderer's colours follow through prefers-color-scheme.
   ipcMain.on("theme:set", (_event, mode) => {
     if (["system", "light", "dark"].includes(mode)) nativeTheme.themeSource = mode;
@@ -1129,13 +1163,14 @@ app.whenReady().then(() => {
   createWindow();
   nativeTheme.on("updated", () => {
     const colors = themeColors();
-    for (const window of BrowserWindow.getAllWindows()) {
+    // Only the main window: the floating face is transparent and must stay that way.
+    for (const window of mainWindow && !mainWindow.isDestroyed() ? [mainWindow] : []) {
       window.setBackgroundColor(colors.window);
       if (process.platform !== "darwin") window.setTitleBarOverlay({ color: colors.overlay, symbolColor: colors.symbol, height: TITLE_BAR_HEIGHT });
     }
   });
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   });
 });
 

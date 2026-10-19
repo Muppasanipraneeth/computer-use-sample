@@ -60,8 +60,8 @@ function renderPrefs() {
 
 // The main process needs the voice preferences (wake word, follow-up, music, personality) and the theme.
 function applyPrefs() {
-  const { wakeWord, followUp, pauseMusic, holdControl, personality, voice } = state.prefs;
-  bridge.voicePrefs?.({ wakeWord, followUp, pauseMusic, holdControl, personality, voice });
+  const { wakeWord, followUp, pauseMusic, holdControl, floatingFace, personality, voice } = state.prefs;
+  bridge.voicePrefs?.({ wakeWord, followUp, pauseMusic, holdControl, floatingFace, personality, voice });
   renderComposer();
   bridge.setTheme?.(state.prefs.theme);
   renderVoice();

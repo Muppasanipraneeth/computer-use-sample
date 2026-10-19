@@ -9,7 +9,8 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { files: ["**/*.{js,mjs,cjs,ts,tsx}"], languageOptions: { globals: { ...globals.browser, ...globals.node } } },
-  { files: ["desktop/preload.cjs"], rules: { "@typescript-eslint/no-require-imports": "off" } },
+  // Sandboxed preloads can only use require().
+  { files: ["desktop/preload.cjs", "desktop/avatar-preload.cjs"], rules: { "@typescript-eslint/no-require-imports": "off" } },
   // Renderer files are classic <script>s sharing one global scope; each declares what it exports or consumes.
   { files: ["desktop/renderer/**/*.js"], languageOptions: { sourceType: "script" } },
   {

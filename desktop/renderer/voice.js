@@ -45,10 +45,14 @@ function chime() {
 /**
  * Plays Jarvis's voice as its sentences arrive, each queued right after the previous one on the audio clock.
  * push() adds a sentence, end() says no more are coming, stop() cuts it off (barge-in). done resolves true when it
- * played to the end, false when stopped.
+ * played to the end, false when stopped. level() is the loudness right now (0–1), for the floating face's lip sync.
  */
 function createSpeechPlayer() {
   const context = micContext ?? new AudioContext();
+  const meter = context.createAnalyser();
+  meter.fftSize = 512;
+  meter.connect(context.destination);
+  const samplesNow = new Float32Array(meter.fftSize);
   const playing = new Set();
   let at = 0;
   let ended = false;
@@ -62,13 +66,20 @@ function createSpeechPlayer() {
   };
   return {
     done,
+    level() {
+      meter.getFloatTimeDomainData(samplesNow);
+      let sum = 0;
+      for (const value of samplesNow) sum += value * value;
+      // Kokoro speech sits around 0.05–0.2 RMS; ×5 maps a normal syllable to a half-open mouth.
+      return Math.min(1, Math.sqrt(sum / samplesNow.length) * 5);
+    },
     push(samples, sampleRate) {
       if (stopped || samples.length === 0) return;
       const buffer = context.createBuffer(1, samples.length, sampleRate);
       buffer.copyToChannel(samples, 0);
       const source = context.createBufferSource();
       source.buffer = buffer;
-      source.connect(context.destination);
+      source.connect(meter);
       at = Math.max(at, context.currentTime + 0.02);
       source.start(at);
       at += buffer.duration;

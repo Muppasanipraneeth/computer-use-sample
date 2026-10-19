@@ -28,6 +28,7 @@ async function answerQuestion(runId, question, answer) {
   // Clear the card at once; the next poll brings the run's own record (and the "You answered" step).
   if (result.ok && latest?.question?.id === question.id) upsertRun({ ...latest, question: null });
   else if (latest) upsertRun(latest);
+  if (result.ok) bridge.avatarTask?.(null);
   if (!result.ok) toast(result.error, "error");
   renderComposer();
   return result.ok;
@@ -49,6 +50,8 @@ function announceQuestion(run) {
   const question = run.question;
   if (!question || state.seenQuestions.has(question.id)) return;
   state.seenQuestions.add(question.id);
+  // Not looking at Jarvis (and it didn't step aside): the floating face asks, so the question is seen at once.
+  if (!document.hasFocus() && state.steppedAsideFor !== run.runId) bridge.avatarTask?.("asking", question.text);
   if (state.steppedAsideFor === run.runId) {
     // The agent is waiting, so the screen is free; it steps aside again on its next screen step.
     state.steppedAsideFor = null;
@@ -249,6 +252,8 @@ async function togglePause() {
 // screenshots would otherwise be mostly this window.
 function stepAside(runId) {
   state.steppedAsideFor = runId;
+  // The window gets out of the way, so the floating face keeps the user company and shows what the agent is doing.
+  bridge.avatarTask?.("working", "Working on your screen. Move the mouse into a corner to stop me.");
   new Notification("The agent is using your screen", {
     body: "Move the mouse into a screen corner to stop it. This window comes back when it finishes.",
   });
@@ -269,6 +274,11 @@ function finish(run) {
     state.steppedAsideFor = null;
     void bridge.comeBack();
   }
+  // A reaction on the floating face when the user wasn't watching: pleased, or sorry, with the first line of the result.
+  if (away || !document.hasFocus()) {
+    const line = (run.reply ?? run.error ?? "").replace(/[*_`#>[\]]/g, "").replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s/)[0] ?? "";
+    bridge.avatarTask?.("done", line.slice(0, 140) || (run.status === "completed" ? "Done." : "That didn't work."), run.status);
+  } else bridge.avatarTask?.(null);
   if (state.voice !== "off" && state.prefs.speakResults && run.runId !== state.voiceStoppedRunId) {
     // Typed or spoken, the result is said out loud, then the follow-up window takes "thanks" or a next task.
     const workspace = workspaceById(chat?.workspaceId);
@@ -324,6 +334,14 @@ async function pollLive() {
     announceQuestion(run);
     // Not while it waits for an answer: the window must stay up so the question can be answered.
     if (isRunning(run) && run.controlsScreen && !run.question && !state.steppedAsideFor && lab === "desktop") stepAside(id);
+    // While it works on the screen, the floating face shows the step it's on.
+    if (isRunning(run) && state.steppedAsideFor === id) {
+      const step = run.steps.findLast((item) => item.kind === "action" || item.kind === "thought");
+      if (step && step.title !== state.faceStep) {
+        state.faceStep = step.title;
+        bridge.avatarTask?.("working", step.title);
+      }
+    }
     if (!isRunning(run)) finish(run);
   });
 }

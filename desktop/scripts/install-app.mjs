@@ -33,7 +33,7 @@ const resources = path.join(build, "Contents", "Resources");
 const app = path.join(resources, "app");
 rmSync(path.join(resources, "default_app.asar"), { force: true });
 mkdirSync(app, { recursive: true });
-for (const entry of ["main.mjs", "preload.cjs", "operator.mjs", "renderer", "voice", "assets"]) {
+for (const entry of ["main.mjs", "preload.cjs", "avatar-preload.cjs", "operator.mjs", "renderer", "voice", "assets"]) {
   cpSync(path.join(desktopDir, entry), path.join(app, entry), { recursive: true });
 }
 // The other top-level modules main.mjs imports (connections, profile, browser sign-in, runner start-up…).

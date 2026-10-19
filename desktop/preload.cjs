@@ -15,6 +15,10 @@ contextBridge.exposeInMainWorld("desktop", {
   copyDiagnostics: () => ipcRenderer.invoke("diagnostics:copy"),
   firstShow: () => ipcRenderer.invoke("app:first-show"),
   welcomeVoice: (request) => ipcRenderer.invoke("welcome:voice", request),
+  // The floating face: send-only, many times a second for the voice level.
+  avatarVoice: (payload) => ipcRenderer.send("avatar:voice", payload),
+  avatarTask: (task, text, outcome) => ipcRenderer.send("avatar:task", task, text, outcome),
+  avatarLevel: (level, source) => ipcRenderer.send("avatar:level", level, source),
   openLogs: () => ipcRenderer.invoke("logs:open"),
   searchRuns: (query) => ipcRenderer.invoke("runs:search", query),
   answerRun: (runId, questionId, answer) => ipcRenderer.invoke("run:answer", runId, questionId, answer),

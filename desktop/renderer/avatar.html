@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'" />
+    <title>Jarvis</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="avatar.css" />
+  </head>
+  <body>
+    <div class="avatar" id="avatar" data-state="idle" data-mood="neutral">
+      <div class="caption" id="caption"><span id="caption-text"></span></div>
+      <div class="face-wrap" id="face-wrap" title="Jarvis · drag to move, click to open">
+        <span class="ring one"></span>
+        <span class="ring two"></span>
+        <span class="ring work"></span>
+        <!-- The Professor (logo.svg) with each part named so it can move: brows, pupils, mouth, moustache, spark. -->
+        <svg class="face" viewBox="0 0 200 200" aria-hidden="true">
+          <defs><clipPath id="tile-clip"><rect width="200" height="200" rx="52" /></clipPath></defs>
+          <g clip-path="url(#tile-clip)">
+            <rect class="tile" width="200" height="200" rx="52" />
+            <g id="head">
+              <g class="ink-fill">
+                <path d="M34 204c4-30 28-46 66-46s62 16 66 46" />
+                <path d="M80 160c6 10 13 14 20 14s14-4 20-14" />
+                <path id="hair" d="M56 108c-16 0-26-12-22-24-12-6-10-22 2-26-4-14 10-24 22-18 0-16 18-24 30-14 6-12 24-12 30 0 12-10 30-2 30 14 12-6 26 4 22 18 12 4 14 20 2 26 4 12-6 24-22 24" />
+                <path d="M60 94c0-24 17-38 40-38s40 14 40 38v14c0 28-17 46-40 46s-40-18-40-46z" />
+                <path d="M60 104c-10-2-14 6-12 14s8 12 13 10" />
+                <path d="M140 104c10-2 14 6 12 14s-8 12-13 10" />
+              </g>
+              <g class="ink-line">
+                <path id="strands" d="M28 66l-10-6M30 92l-12 3M172 66l10-6M170 92l12 3M88 26l-3-10M114 26l4-10" />
+                <path d="M86 72c5 3 9 3 14 0s9-3 14 0" />
+                <path id="brow-l" d="M68 86c6-6 14-7 20-3" />
+                <path id="brow-r" d="M112 83c6-4 14-3 20 3" />
+                <circle cx="82" cy="102" r="12" />
+                <circle cx="118" cy="102" r="12" />
+                <path d="M94 101c4-3 8-3 12 0" />
+                <path id="smile" d="M90 146 Q100 151 110 146" />
+              </g>
+              <path id="glint" class="glint" d="M75 97l6-6M111 97l6-6" />
+              <circle id="pupil-l" class="ink" cx="84" cy="103" r="4" />
+              <circle id="pupil-r" class="ink" cx="120" cy="103" r="4" />
+              <ellipse id="mouth" class="mouth" cx="100" cy="146" rx="7" ry="0" />
+              <path id="moustache" class="ink" d="M74 133c6-8 16-10 26-4 10-6 20-4 26 4-5 6-15 8-26 4-11 4-21 2-26-4z" />
+            </g>
+          </g>
+          <path id="spark" class="spark" d="M172 18c1.6 7 4 9.4 11 11-7 1.6-9.4 4-11 11-1.6-7-4-9.4-11-11 7-1.6 9.4-4 11-11z" />
+        </svg>
+        <span class="thought"><i></i><i></i><i></i></span>
+        <span class="glyph">?</span>
+      </div>
+    </div>
+    <script src="avatar.js"></script>
+  </body>
+</html>

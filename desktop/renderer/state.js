@@ -20,6 +20,7 @@ const DEFAULT_PREFS = {
   followUp: true,
   pauseMusic: true,
   holdControl: true,
+  floatingFace: true, // the floating Jarvis face while talking or working on the screen
   welcome: true, // launch animation and tone
   greet: true, // spoken hello on launch when Voice is on
   personality: "witty",

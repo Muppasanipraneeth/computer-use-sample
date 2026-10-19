@@ -15,6 +15,9 @@ const VOICE_LABELS = {
   speaking: "Speaking…",
 };
 
+// The floating face gets each change of state once (renderVoice runs far more often than the state changes).
+let faceShown = null;
+
 function renderVoice(label) {
   const shown = state.voice === "off" ? "off" : (state.voicePhase ?? state.voice);
   const chip = $("#voice");
@@ -22,6 +25,10 @@ function renderVoice(label) {
   chip.setAttribute("aria-pressed", String(state.voice !== "off"));
   const listening = shown === "listening" && !state.prefs.wakeWord ? (holdControlOn() ? "Hold Control" : `Press ${LISTEN_KEYS}`) : null;
   $("#voice-label").textContent = label ?? listening ?? VOICE_LABELS[shown];
+  if (shown !== faceShown) {
+    faceShown = shown;
+    bridge.avatarVoice?.({ state: shown });
+  }
 }
 
 // Hold Control to talk needs the macOS key watcher (built with Xcode's tools) and the setting on.
@@ -42,7 +49,14 @@ async function enableVoice() {
     return;
   }
   try {
-    await startMicrophone((chunk) => bridge.voiceAudio(chunk));
+    // The user's loudness moves the floating face's listening rings while it hears them (10 chunks a second).
+    await startMicrophone((chunk) => {
+      bridge.voiceAudio(chunk);
+      if (state.voice !== "hearing") return;
+      let sum = 0;
+      for (const value of chunk) sum += value * value;
+      bridge.avatarLevel?.(Math.min(1, Math.sqrt(sum / chunk.length) * 8), "mic");
+    });
   } catch (error) {
     await bridge.voiceDisable();
     state.voice = "off";
@@ -129,10 +143,17 @@ async function say(request, followUp = true) {
   newestSpeechId = started.id;
   for (const chunk of earlyChunks.get(started.id) ?? []) playChunk(chunk);
   earlyChunks.delete(started.id);
+  // The floating face shows the words with a matching expression and moves its mouth with the voice (30 times a
+  // second; an interval, not animation frames, because those stop while this window is minimized).
+  faceShown = "speaking";
+  bridge.avatarVoice?.({ state: "speaking", text: started.text, outcome: typeof request === "object" ? (request.run?.status ?? null) : null });
+  const lipSync = setInterval(() => bridge.avatarLevel?.(player.level(), "speech"), 33);
   state.voicePhase = "speaking";
   renderVoice();
   bridge.voiceSpeaking(true);
   const finished = await player.done;
+  clearInterval(lipSync);
+  bridge.avatarLevel?.(0, "speech");
   speechPlayers.delete(started.id);
   if (speech?.player === player) speech = null;
   state.voicePhase = null;
