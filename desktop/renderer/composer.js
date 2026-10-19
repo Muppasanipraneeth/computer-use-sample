@@ -53,7 +53,7 @@ function renderComposer() {
         : "Add to it, change it, or ask for something next…"
       : "Ask Jarvis anything…";
   // While the box shows what you're saying (live, then the whole request being understood).
-  const heardHint = state.voiceHeard ? (state.voiceHeard.final ? "Working out what you meant…" : "Pause when you're done") : null;
+  const heardHint = state.voiceHeard ? (state.voiceHeard.final ? "Working out what you meant · type to correct" : "Pause when done · type to correct") : null;
   $("#composer-hint").textContent = heardHint ?? (state.voicePending
     ? "Confirming · Esc or talk over it to change"
     : state.judging

@@ -6,7 +6,10 @@ import { readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const QUICK_KINDS = new Set(["play", "pause", "resume", "next", "previous", "volume", "open"]);
+const QUICK_KINDS = new Set(["play", "pause", "resume", "next", "previous", "volume", "open", "quit"]);
+// "Quit" as the speech recognizer hears it: Moonshine often writes "quick" or "quite" ("Quick the slack app", real
+// output). Safe because the rest must be exactly an installed app's name.
+const QUIT = /^(?:quit|quits|quick|quite|kwit|close|exit|shut down|kill)\s+(?:the\s+)?(.+?)(?:\s+app(?:lication)?)?$/i;
 // Words that mean "some music", not a song to search for: "play music" resumes what was playing.
 const GENERIC_MUSIC = /^(some |the )?(music|songs?|a song|something|anything|spotify|my music)$/i;
 // Other places to play from: those go to the agent, which knows how to use them.
@@ -70,6 +73,9 @@ export function matchQuickAction(text, apps, platform = process.platform) {
   if (volume && Number(volume[1]) <= 100) return { do: "volume", level: Number(volume[1]) };
   const open = words.match(/^(?:open|launch|start)\s+(?:the\s+)?(.+?)(?:\s+app)?$/i);
   if (open && apps.has(open[1].toLowerCase())) return { do: "open", app: apps.get(open[1].toLowerCase()) };
+  const quit = words.replace(/,/g, "").match(QUIT); // "Quits, Spotify" (real output)
+  const quitting = quit ? apps.get(quit[1].toLowerCase()) : undefined;
+  if (quitting && quitting.toLowerCase() !== "jarvis") return { do: "quit", app: quitting };
   return null;
 }
 
@@ -89,9 +95,9 @@ export function checkQuickAction(quick, apps, platform = process.platform, reque
     const level = Math.round(Number(quick.level));
     return Number.isFinite(level) && level >= 0 && level <= 100 ? { do: "volume", level } : null;
   }
-  if (quick.do === "open") {
+  if (quick.do === "open" || quick.do === "quit") {
     const app = typeof quick.app === "string" ? apps.get(quick.app.trim().toLowerCase()) : undefined;
-    return app ? { do: "open", app } : null;
+    return app && !(quick.do === "quit" && app.toLowerCase() === "jarvis") ? { do: quick.do, app } : null;
   }
   return { do: quick.do };
 }
@@ -163,6 +169,24 @@ async function restorePlayback(exec, wait, before) {
 }
 
 /**
+ * Quits an app the AppleScript way (as ⌘Q would: it saves state, and may ask about unsaved work), then checks that it
+ * actually went. Asking `tell application … to quit` of an app that isn't running would launch it first, so that is
+ * checked before.
+ */
+async function quitApp(app, { exec, wait }) {
+  const running = async () => (await exec("osascript", ["-e", `application ${quoted(app)} is running`], 3000)).out === "true";
+  if (!(await running())) return { ok: true, say: `${app} isn't open.` };
+  if (!(await exec("osascript", ["-e", `tell application ${quoted(app)} to quit`], 6000)).ok) {
+    return { ok: false, say: `I couldn't quit ${app}.` };
+  }
+  for (let tries = 0; tries < 12; tries += 1) {
+    if (!(await running())) return { ok: true, say: `Quit ${app}.` };
+    await wait(250);
+  }
+  return { ok: false, say: `${app} is still open; it may be asking you something.` };
+}
+
+/**
  * Execute without web or agent calls. A failed attempted action returns a truthful spoken failure, not a task
  * fallback that might repeat the action or search the web. `exec`/`wait` are the OS boundary used by behavior tests.
  */
@@ -172,6 +196,7 @@ export async function runQuickAction(action, { exec = run, wait = sleep } = {}) 
     const opened = await exec("open", ["-a", action.app], 6000);
     return { ok: opened.ok, say: opened.ok ? `Opened ${action.app}.` : `I couldn't open ${action.app}.` };
   }
+  if (action.do === "quit") return quitApp(action.app, { exec, wait });
   if (action.do === "volume") {
     const set = await command(`set volume output volume ${action.level}`);
     return { ok: set.ok, say: set.ok ? `Volume at ${action.level} percent.` : "I couldn't change the volume." };

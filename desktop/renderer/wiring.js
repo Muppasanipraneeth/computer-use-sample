@@ -1,4 +1,4 @@
-/* global bridge, renderVoice, playChunk, onVoiceCommand, showHeard, clearHeard, toast, stopSpeaking, chime, state, disableVoice, $, stickToBottom: writable, send, cancelVoicePending, autosize, renderComposer, enableVoice, stopRun, togglePause, pickAttachments, attachDropped, attachPasted, persist, renderHeader, newChat, openWorkspaceDialog, runSearch, saveWorkspace, deleteWorkspace, pickWorkspaceFolder, clearWorkspaceFolder, openSettings, selectSettingsTab, setPref, renderPrefs, previewVoice, saveProfile, renderConnections, addMemoryFromForm, addRoutineFromForm, runDueRoutines, checkPermissions, openSetup, pendingConnect: writable, openSource, loadAuth, checkRunner, renderScreen, screenRun, screenshots, openGallery, scrollToLatest, stepGallery */
+/* global bridge, renderVoice, playChunk, onVoiceCommand, showHeard, clearHeard, overrideHeard, toast, stopSpeaking, chime, state, disableVoice, $, stickToBottom: writable, send, cancelVoicePending, autosize, renderComposer, enableVoice, stopRun, togglePause, pickAttachments, attachDropped, attachPasted, persist, renderHeader, newChat, openWorkspaceDialog, runSearch, saveWorkspace, deleteWorkspace, pickWorkspaceFolder, clearWorkspaceFolder, openSettings, selectSettingsTab, setPref, renderPrefs, previewVoice, saveProfile, renderConnections, addMemoryFromForm, addRoutineFromForm, runDueRoutines, checkPermissions, openSetup, pendingConnect: writable, openSource, loadAuth, checkRunner, renderScreen, screenRun, screenshots, openGallery, scrollToLatest, stepGallery */
 // Event wiring: the voice process, scrolling, and every control's listeners. Loads after every script it calls into.
 
 /* ---------- voice events ---------- */
@@ -23,6 +23,7 @@ bridge.onVoice((kind, payload) => {
   if (payload.error) toast(payload.error, "error");
   if (payload.state === "hearing") {
     stopSpeaking(); // barge-in: the user talked over Jarvis
+    state.voiceOverridden = false; // a new request: an earlier correction doesn't drop it
     if (payload.source === "wake" || payload.source === "push-to-talk") chime();
   }
   if (payload.note === "no-speech") toast(payload.source === "wake" ? "Didn't catch anything after “Hey Jarvis”." : "Didn't catch anything.", "info");
@@ -56,6 +57,7 @@ $("#prompt").addEventListener("keydown", (event) => {
   }
 });
 $("#prompt").addEventListener("input", () => {
+  overrideHeard();
   cancelVoicePending();
   autosize();
   renderComposer();

@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld("desktop", {
   voiceAudio: (samples) => ipcRenderer.send("voice:audio", samples),
   voiceUnderstand: (request) => ipcRenderer.invoke("voice:understand", request),
   voiceSpeak: (request) => ipcRenderer.invoke("voice:speak", request),
+  voiceResult: (run) => ipcRenderer.invoke("voice:result", run),
   voiceSpeaking: (on, followUp) => ipcRenderer.send("voice:speaking", on, followUp),
   voiceSilence: (id) => ipcRenderer.send("voice:silence", id),
   voiceBusy: (busy) => ipcRenderer.send("voice:busy", busy),

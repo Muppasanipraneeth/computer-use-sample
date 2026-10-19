@@ -1,5 +1,5 @@
 /* global state, $, LISTEN_KEYS, bridge, persist, toast, startMicrophone, stopMicrophone, createSpeechPlayer, renderComposer, setPrompt, stopRun, send, answerFor, answerQuestion, followUp, renderMemories, renderRoutines */
-/* exported renderVoice, holdControlOn, enableVoice, disableVoice, inConversation, stopSpeaking, playChunk, say, cancelVoicePending, onVoiceCommand, showHeard, clearHeard */
+/* exported renderVoice, holdControlOn, enableVoice, disableVoice, inConversation, stopSpeaking, playChunk, say, showQuietly, cancelVoicePending, onVoiceCommand, showHeard, clearHeard, overrideHeard */
 // Voice: turning it on and off, speaking replies, and acting on spoken commands.
 
 /* ---------- voice ---------- */
@@ -122,9 +122,10 @@ function playChunk({ id, samples, sampleRate, last }) {
 }
 
 /**
- * Says `request` ({ text } or { run }) out loud, sentence by sentence as the voice process renders them. Resolves true
- * when it played to the end, false when it was cut off, usually by the user talking over it. The microphone stays
- * open throughout; afterwards a short follow-up window takes a reply without the wake phrase.
+ * Says `request` (text, or { text, outcome } for a finished run's result) out loud, sentence by sentence as the voice
+ * process renders them. Resolves true when it played to the end, false when it was cut off, usually by the user
+ * talking over it. The microphone stays open throughout; afterwards a short follow-up window takes a reply without the
+ * wake phrase.
  */
 async function say(request, followUp = true) {
   if (state.voice === "off") return true;
@@ -146,7 +147,7 @@ async function say(request, followUp = true) {
   // The floating face shows the words with a matching expression and moves its mouth with the voice (30 times a
   // second; an interval, not animation frames, because those stop while this window is minimized).
   faceShown = "speaking";
-  bridge.avatarVoice?.({ state: "speaking", text: started.text, outcome: typeof request === "object" ? (request.run?.status ?? null) : null });
+  bridge.avatarVoice?.({ state: "speaking", text: started.text, outcome: typeof request === "object" ? (request.outcome ?? null) : null });
   const lipSync = setInterval(() => bridge.avatarLevel?.(player.level(), "speech"), 33);
   state.voicePhase = "speaking";
   renderVoice();
@@ -160,6 +161,16 @@ async function say(request, followUp = true) {
   renderVoice();
   bridge.voiceSpeaking(false, followUp && finished && state.voice !== "off");
   return finished;
+}
+
+/**
+ * Confirms without speaking, for things the user already sees or hears (a song a quick action just started): on
+ * screen, and as the floating face's caption, which shows it briefly while the face settles.
+ */
+function showQuietly(line) {
+  if (!line) return;
+  toast(line, "ok");
+  bridge.avatarVoice?.({ text: line });
 }
 
 /** Drops a task Jarvis was about to start. Its words stay in the box for editing. */
@@ -199,14 +210,13 @@ async function voiceCancel(line) {
 
 /**
  * What you're saying, live in the message box while you talk (from the speech worker's partial transcripts), then the
- * whole request while Jarvis works out what you meant (final). Read-only meanwhile, so Enter can't send half a
- * sentence; text you typed yourself is never replaced.
+ * whole request while Jarvis works out what you meant (final). Text you typed yourself is never replaced, and typing
+ * over these words makes them yours (overrideHeard).
  */
 function showHeard(text, final = false) {
   const box = $("#prompt");
   if (!text || (box.value && box.value !== state.voiceHeard?.text)) return;
   state.voiceHeard = { text, final };
-  box.readOnly = true;
   box.classList.add("dictating");
   setPrompt(text);
 }
@@ -217,10 +227,21 @@ function clearHeard(keep = false) {
   if (!heard) return;
   state.voiceHeard = null;
   const box = $("#prompt");
-  box.readOnly = false;
   box.classList.remove("dictating");
   if (!keep && box.value === heard.text) setPrompt("");
   else renderComposer();
+}
+
+/**
+ * You typed over what Jarvis heard ("Quick the Spotify" → "quit Spotify"): your words win. The spoken request is
+ * dropped, whether it's still to come or being worked out, and the box is an ordinary prompt again: Enter sends it.
+ */
+function overrideHeard() {
+  if (!state.voiceHeard) return false;
+  state.voiceHeard = null;
+  state.voiceOverridden = true;
+  $("#prompt").classList.remove("dictating");
+  return true;
 }
 
 // Spoken prompts drive the real mouse and keyboard, so Jarvis says what it understood before doing it ("I'll open
@@ -262,6 +283,11 @@ async function onVoiceCommand({ action, prompt, source }) {
     if (addressed) toast("Didn't catch that.", "info");
     return;
   }
+  // You corrected it in the box while talking: what you typed is the request now, not what was heard.
+  if (state.voiceOverridden) {
+    state.voiceOverridden = false;
+    return;
+  }
   // The whole request replaces the live words and stays in view while Jarvis decides what to do with it.
   if (prompt) showHeard(prompt, true);
   else clearHeard();
@@ -301,6 +327,11 @@ async function respond({ action, prompt, source, addressed }) {
   state.voicePhase = null;
   renderVoice();
   const reply = result.ok ? result.reply : { kind: "task", say: "On it.", prompt };
+  // You typed over it while Jarvis was working it out: your text in the box is the request now.
+  if (state.voiceOverridden) {
+    state.voiceOverridden = false;
+    return;
+  }
   // Understood: anything but a task to confirm no longer needs the words in the box.
   if (reply.kind !== "task") clearHeard();
   if (reply.kind === "ignore") {
@@ -309,7 +340,7 @@ async function respond({ action, prompt, source, addressed }) {
   }
   if (reply.kind === "stop") return voiceStop(reply.say);
   if (reply.kind === "cancel") return voiceCancel(reply.say);
-  if (reply.kind === "answer") return say(reply.say);
+  if (reply.kind === "answer") return reply.silent ? showQuietly(reply.say) : say(reply.say);
   if (reply.kind === "remember" || reply.kind === "schedule") {
     // Saved by the main process already; refresh the lists in case Settings is open.
     void (reply.kind === "remember" ? renderMemories() : renderRoutines());

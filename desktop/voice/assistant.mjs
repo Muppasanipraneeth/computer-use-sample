@@ -97,7 +97,7 @@ export function understandingInstructions({ now, source, running, lastReply, his
     "Reply with exactly one JSON object and nothing else:",
     '{"kind":"task"|"answer"|"remember"|"schedule"|"stop"|"cancel"|"ignore","say":"…","prompt":"…","quick":{…},"time":"HH:MM","days":[0,1,2,3,4,5,6]}',
     '"time" and "days" only for "schedule"; leave them out otherwise.',
-    '"quick" only for a "task" that is exactly one command to run now without the agent: {"do":"play","query":"<song title> by <artist>"} (a named song in Spotify, include "by artist" when known), {"do":"pause"}, {"do":"resume"}, {"do":"next"}, {"do":"previous"}, {"do":"volume","level":0-100} (computer volume), {"do":"open","app":"<app name>"}. Correct clear speech-recognition mistakes in names, but do not guess an artist. Leave "quick" out for albums, playlists, genres, another service (YouTube/Apple Music), song lyrics, or requests containing another step.',
+    '"quick" only for a "task" that is exactly one command to run now without the agent: {"do":"play","query":"<song title> by <artist>"} (a named song in Spotify, include "by artist" when known), {"do":"pause"}, {"do":"resume"}, {"do":"next"}, {"do":"previous"}, {"do":"volume","level":0-100} (computer volume), {"do":"open","app":"<app name>"}, {"do":"quit","app":"<app name>"} (quit or close an app; speech recognition often writes "quit" as "quick" or "quite", so "quick the Slack app" means quit Slack). Correct clear speech-recognition mistakes in names, but do not guess an artist. Leave "quick" out for albums, playlists, genres, another service (YouTube/Apple Music), song lyrics, or requests containing another step.',
     '- "task": something to do on the computer or the web, including any question that needs current or live information (news, weather, prices, scores, anything recent): the agent can browse the web, so never say you can\'t check something. "say" is at most two short spoken sentences: what you will do, in first person, and (if your personality jokes) your quip. "prompt" is the task as a clear instruction for the desktop agent, keeping every detail the user gave; for a question, ask the agent to look it up and report the answer. A reply like "yes, do it" to a task you proposed is that task again.',
     '- "answer": a greeting, a question about you or the conversation, a request for a joke, a fact or motivation, or anything timeless you can answer without the computer. "say" is the spoken answer, at most three short sentences. "prompt" is "".',
     '- "stop": the user wants the running task stopped. "cancel": the user takes the request back. For both, "say" is a short confirmation and "prompt" is "".',
@@ -243,12 +243,32 @@ function firstSentences(text, limit) {
   return out.trim().slice(0, limit);
 }
 
+// Tasks whose result the user sees or hears for themselves (the song plays, the app opens). Saying "Done, it's
+// playing" only talks over it, and the music pauses while Jarvis speaks: so these finish silently, on screen only.
+const EVIDENT_ACTION = /^(?:(?:hey )?jarvis[,\s]+)?(?:please\s+)?(?:open|launch|start|play|put on|pause|resume|skip|next|previous|turn (?:up|down)|set (?:the )?volume|mute|unmute|close|quit|minimi[sz]e|maximi[sz]e)\b/i;
+// …unless they asked to be told something, or the report says it didn't go as asked.
+const NEEDS_TELLING = /\?|\b(?:what|who|when|where|why|how|which|find|search|look up|tell me|let me know|check|summari[sz]e|read|list|compare|explain)\b/i;
+const TROUBLE = /\b(?:couldn'?t|could not|can'?t|cannot|unable|failed|not found|no results|didn'?t|did not|wasn'?t|isn'?t|instead|however|but)\b/i;
+
+/**
+ * Whether a finished run is worth saying out loud. A failure always is; a stop never (the user stopped it); a
+ * completed action is only when its result isn't already in front of them. The result model can still pass on the
+ * rest (SILENT, see resultInstructions).
+ */
+export function resultWorthSaying(run) {
+  if (run.status === "failed") return true;
+  if (run.status !== "completed") return false;
+  const prompt = String(run.prompt ?? "").trim();
+  return !EVIDENT_ACTION.test(prompt) || NEEDS_TELLING.test(prompt) || TROUBLE.test(String(run.reply ?? ""));
+}
+
 export function resultInstructions(personality, profile, workspace = null) {
   const name = typeof workspace?.name === "string" ? workspace.name.trim() : "";
   const rules = typeof workspace?.instructions === "string" ? workspace.instructions.replace(/\s+/g, " ").trim().slice(0, 1500) : "";
   return [
-    "You are Jarvis, a voice assistant. A task you ran for the user on their computer just finished; tell them the result out loud.",
+    "You are Jarvis, a voice assistant. A task you ran for the user on their computer just finished; tell them the result out loud, or stay quiet when there is nothing worth interrupting them for.",
     "If they asked a question or asked you to find something, say the answer itself: the key facts in up to four short sentences, the way you'd tell a friend. Don't read lists, links or sources aloud; the full report is on screen.",
+    "If the task was an action whose result they can already see or hear (music or a video started, an app, page or file opened, a setting changed) and the report says it worked as asked, reply with exactly SILENT: speaking would only talk over it.",
     "Otherwise say how it went in one or two short sentences: the outcome first, then anything they need to know.",
     "Base it only on the report you are given; never claim more than it says.",
     persona(personality),
@@ -275,7 +295,12 @@ export function parseSpokenLine(stdout) {
   return line.length > 700 ? "" : line;
 }
 
-/** What Jarvis says when a task it started by voice finishes. */
+/** True when the result model chose to stay quiet. */
+export function isSilent(line) {
+  return /^silent[.!]?$/i.test(String(line ?? "").trim());
+}
+
+/** What Jarvis says when a task finishes and no model is available to put it in words (callers check resultWorthSaying). */
 export function spokenSummary(run) {
   if (run.status === "completed") return firstSentences(run.reply, 220) || "Done.";
   if (run.status === "cancelled") return "Stopped.";

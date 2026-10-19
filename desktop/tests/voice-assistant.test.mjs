@@ -5,11 +5,13 @@ import {
   aboutUser,
   chatSelectorsFromOmpStdout,
   followUpInstructions,
+  isSilent,
   parseFollowUp,
   parseUnderstanding,
   pickUnderstandingModel,
   quickFollowUp,
   resultInstructions,
+  resultWorthSaying,
   spokenSummary,
   typedNeedsUnderstanding,
   understandingInstructions,
@@ -150,6 +152,22 @@ test("a finished run is summed up in a sentence or two of plain speech", () => {
   assert.equal(spokenSummary({ status: "cancelled" }), "Stopped.");
   assert.equal(spokenSummary({ status: "failed", error: "Spotify is not installed. Install it first." }), "That didn't work. Spotify is not installed. Install it first.");
   assert.equal(spokenSummary({ status: "failed", error: null }), "That didn't work.");
+});
+
+test("a result is said only when it tells the user something they can't already see or hear", () => {
+  const done = (prompt, reply = "Done. It's playing.") => resultWorthSaying({ status: "completed", prompt, reply });
+  assert.equal(done("Open Spotify and play the song Runaway"), false, "the music is the confirmation");
+  assert.equal(done("open Slack"), false);
+  assert.equal(done("set the volume to 30"), false);
+  assert.equal(done("What's the weather in Hyderabad?", "It's 31 °C and sunny."), true, "an answer is the point");
+  assert.equal(done("Find the latest tech news"), true);
+  assert.equal(done("Open Spotify and tell me what's playing"), true, "they asked to be told");
+  assert.equal(done("Open Spotify and play Runaway", "I couldn't find Runaway, so I played Runaway (Live) instead."), true, "not what was asked");
+  assert.equal(resultWorthSaying({ status: "failed", prompt: "play Runaway", error: "Spotify isn't installed." }), true, "failures are always said");
+  assert.equal(resultWorthSaying({ status: "cancelled", prompt: "play Runaway" }), false, "the user stopped it");
+  assert.equal(isSilent("SILENT"), true);
+  assert.equal(isSilent("Silent."), true);
+  assert.equal(isSilent("Silent Night is playing."), false);
 });
 
 test("the user's profile tells Jarvis what to call them and where they live, and nothing else", () => {

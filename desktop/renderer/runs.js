@@ -1,4 +1,4 @@
-/* global state, renderRun, renderRecent, renderChats, screenRun, renderScreen, scrollToLatest, renderComposer, bridge, toast, chatOf, inConversation, say, currentChat, $, workingRunIn, clearComposer, setPrompt, blocker, renderMemories, renderRoutines, workspaceById, scenario, setStickToBottom, renderEmpty, removeRunView, renderAttachments, renderScenarios, renderHeader, isRunning, persist, renderQueue, chatTitle, renderThread, renderWorkspaces, newChatRecord, MAX_CHATS */
+/* global state, renderRun, renderRecent, renderChats, screenRun, renderScreen, scrollToLatest, renderComposer, bridge, toast, chatOf, inConversation, say, showQuietly, currentChat, $, workingRunIn, clearComposer, setPrompt, blocker, renderMemories, renderRoutines, workspaceById, scenario, setStickToBottom, renderEmpty, removeRunView, renderAttachments, renderScenarios, renderHeader, isRunning, persist, renderQueue, chatTitle, renderThread, renderWorkspaces, newChatRecord, MAX_CHATS */
 /* exported answerQuestion, answerFor, send, followUp, stopRun, togglePause, pollLive, adoptLive, restoreChat, switchChat, newChat */
 // Runs: answering questions, starting, following up, stopping, pausing, polling, and switching chats.
 
@@ -105,7 +105,9 @@ async function send(promptOverride, { chat = currentChat(), attachments } = {}) 
     if (reply && ["remember", "schedule", "answer"].includes(reply.kind)) {
       clearComposer();
       // say() shows the words itself when it speaks them (or when replies aren't spoken); with Voice off, toast here.
+      // Music a quick action just started isn't talked over (silent).
       if (state.voice === "off") toast(reply.say, "ok");
+      else if (reply.silent) showQuietly(reply.say);
       else void say(reply.say, false);
       if (reply.kind === "remember") void renderMemories();
       if (reply.kind === "schedule") void renderRoutines();
@@ -280,9 +282,14 @@ function finish(run) {
     bridge.avatarTask?.("done", line.slice(0, 140) || (run.status === "completed" ? "Done." : "That didn't work."), run.status);
   } else bridge.avatarTask?.(null);
   if (state.voice !== "off" && state.prefs.speakResults && run.runId !== state.voiceStoppedRunId) {
-    // Typed or spoken, the result is said out loud, then the follow-up window takes "thanks" or a next task.
+    // Typed or spoken, a result worth hearing (an answer, a failure) is said out loud, then the follow-up window takes
+    // "thanks" or a next task. Whether it's worth it is decided first: an action the user can see or hear for itself
+    // (the song now playing) finishes quietly, without pausing the music to announce it.
     const workspace = workspaceById(chat?.workspaceId);
-    void inConversation(() => say({ run: { status: run.status, prompt: run.prompt, reply: run.reply, error: run.error, workspace: workspace ? { name: workspace.name, instructions: workspace.instructions } : null } }));
+    const finished = { status: run.status, prompt: run.prompt, reply: run.reply, error: run.error, workspace: workspace ? { name: workspace.name, instructions: workspace.instructions } : null };
+    void bridge.voiceResult(finished).then((result) => {
+      if (result?.ok && result.text && state.voice !== "off") void inConversation(() => say({ text: result.text, outcome: run.status }));
+    });
   }
   if (state.voiceStoppedRunId === run.runId) state.voiceStoppedRunId = null;
   if (chat) startQueued(chat, run.status);

@@ -28,11 +28,13 @@ import {
 import { openSignInBrowser } from "./browser-profile.mjs";
 import {
   chatSelectorsFromOmpStdout,
+  isSilent,
   parseSpokenLine,
   parseUnderstanding,
   pickUnderstandingModel,
   resultInstructions,
   resultRequest,
+  resultWorthSaying,
   spokenSummary,
   understandingInstructions,
   followUpInstructions,
@@ -523,7 +525,10 @@ async function quickReply(action, started) {
   const result = await runQuickAction(action).catch(() => ({ ok: false, say: "I couldn't complete that in the app." }));
   voiceDebug(`quick action ${action.do} ${result.ok ? "done" : "failed"} in ${((performance.now() - started) / 1000).toFixed(1)} s`);
   log.info(`quick action: ${action.do} ${result.ok ? "done" : "failed"} in ${Math.round(performance.now() - started)} ms`);
-  return { kind: "answer", say: result.say, prompt: "", understood: true, quick: action };
+  // A quick action that worked is its own confirmation (the music plays, the app opens or quits): shown, not said, so
+  // nothing talks over or pauses it. A failure is said.
+  const silent = result.ok;
+  return { kind: "answer", say: result.say, prompt: "", understood: true, quick: action, ...(silent ? { silent: true } : {}) };
 }
 
 async function understand({ text, source, running, lastReply }) {
@@ -616,14 +621,20 @@ async function judgeFollowUp({ text, running, progress, paused }) {
   }
 }
 
-/** Says a finished run's outcome in Jarvis's voice; the plain first sentences of the agent's reply if the model is out. */
+/**
+ * What to say about a finished run, or "" to stay quiet: an action the user can see or hear for themselves (the song
+ * playing) finishes silently, and the model may pass on others. Falls back to the agent's first sentences.
+ */
 async function summarize(run) {
+  if (!resultWorthSaying(run)) return "";
   const model = await lookUpUnderstandingModel();
   if (model) {
     try {
       const instructions = resultInstructions(voicePrefs.personality, await userContext(), run.workspace ?? null);
       const completed = await runOmp(["-p", "--no-tools", "--no-session", "--no-extensions", "--no-skills", "--no-rules", "--thinking", "off", "--model", model, "--system-prompt", instructions, resultRequest(run)], 10_000);
       const line = completed.code === 0 ? parseSpokenLine(completed.stdout) : "";
+      // A failure is never passed over in silence.
+      if (isSilent(line)) return run.status === "failed" ? spokenSummary(run) : "";
       if (line) return line;
     } catch {
       // Fall through to the plain summary.
@@ -838,17 +849,24 @@ app.whenReady().then(() => {
       return failure(error);
     }
   });
-  // Starts saying text, or a short summary of a finished run ({ run }). Sentences stream to the window as
-  // "voice:speech" chunks with this id, so the first one plays while the rest are generated.
+  // Starts saying text. Sentences stream to the window as "voice:speech" chunks with this id, so the first one plays
+  // while the rest are generated.
   ipcMain.handle("voice:speak", async (_event, request) => {
     if (!voice) return { ok: false, error: "Voice is off." };
-    const text = typeof request?.text === "string" ? request.text : request?.run ? await summarize(request.run) : "";
-    if (!text || !voice) return { ok: false, error: "Nothing to say." };
-    if (request?.run) rememberTurn({ role: "jarvis", text });
+    const text = typeof request?.text === "string" ? request.text : "";
+    if (!text) return { ok: false, error: "Nothing to say." };
     const id = nextSpeechId++;
     voiceDebug(`saying: "${text}"`);
     voice.speaker.postMessage({ type: "speak", id, text });
     return { ok: true, id, text };
+  });
+  // A finished run: what to say about it ("" to stay quiet). Decided before any speech, so nothing pauses the music
+  // for a result that isn't said.
+  ipcMain.handle("voice:result", async (_event, run) => {
+    const text = run && typeof run === "object" ? await summarize(run) : "";
+    voiceDebug(`result for "${String(run?.prompt ?? "").slice(0, 60)}": ${text ? `"${text}"` : "silent"}`);
+    if (text) rememberTurn({ role: "jarvis", text });
+    return { ok: true, text };
   });
   ipcMain.on("voice:silence", (_event, id) => {
     voice?.speaker.postMessage({ type: "cancel", id });

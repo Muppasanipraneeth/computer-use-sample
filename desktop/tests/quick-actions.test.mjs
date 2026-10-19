@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { checkQuickAction, matchQuickAction, runQuickAction } from "../quick-actions.mjs";
 
-const withSpotify = new Map([["spotify", "Spotify"], ["slack", "Slack"], ["google chrome", "Google Chrome"]]);
+const withSpotify = new Map([["spotify", "Spotify"], ["slack", "Slack"], ["google chrome", "Google Chrome"], ["jarvis", "Jarvis"]]);
 const withoutSpotify = new Map([["slack", "Slack"]]);
 const match = (text, apps = withSpotify) => matchQuickAction(text, apps, "darwin");
 
@@ -35,6 +35,39 @@ test("open only names installed apps, with their real names; volume stays in ran
   assert.deepEqual(match("launch the google chrome app"), { do: "open", app: "Google Chrome" });
   assert.deepEqual(match("set the volume to 30%"), { do: "volume", level: 30 });
   assert.equal(match("volume 300"), null);
+});
+
+test("quit understands how the recognizer mishears it, but only for an installed app's exact name", () => {
+  for (const heard of ["Quit Spotify.", "Quick the Spotify", "quite the spotify app", "Quits, Spotify", "close Spotify"]) {
+    assert.deepEqual(match(heard), { do: "quit", app: "Spotify" }, heard);
+  }
+  assert.deepEqual(match("Quick the slack app"), { do: "quit", app: "Slack" }, "real transcript of “quit the Slack app”");
+  assert.equal(match("quick question about Slack"), null, "not an app name");
+  assert.equal(match("quit Photoshop"), null, "not installed");
+  assert.equal(match("quit Jarvis"), null, "Jarvis doesn't quit itself");
+  assert.deepEqual(checkQuickAction({ do: "quit", app: "spotify" }, withSpotify, "darwin"), { do: "quit", app: "Spotify" });
+});
+
+// The OS boundary for quitting: `running` flips once the app has gone; `stays` is an app that won't (a save dialog).
+function quitSession({ running = true, stays = false } = {}) {
+  const calls = [];
+  const exec = async (_file, args) => {
+    const script = args.at(-1);
+    calls.push(script);
+    if (script.endsWith("is running")) return { ok: true, out: String(running) };
+    if (script.endsWith("to quit") && !stays) running = false;
+    return { ok: true, out: "" };
+  };
+  return { exec, wait: async () => {}, calls };
+}
+
+test("quitting is confirmed only once the app is gone, and never launches an app that wasn't open", async () => {
+  assert.deepEqual(await runQuickAction({ do: "quit", app: "Spotify" }, quitSession()), { ok: true, say: "Quit Spotify." });
+  const stuck = await runQuickAction({ do: "quit", app: "Spotify" }, quitSession({ stays: true }));
+  assert.deepEqual(stuck, { ok: false, say: "Spotify is still open; it may be asking you something." });
+  const closed = quitSession({ running: false });
+  assert.deepEqual(await runQuickAction({ do: "quit", app: "Spotify" }, closed), { ok: true, say: "Spotify isn't open." });
+  assert.equal(closed.calls.some((call) => call.endsWith("to quit")), false, "telling a closed app to quit would open it");
 });
 
 test("the model's quick action is checked before it runs", () => {
