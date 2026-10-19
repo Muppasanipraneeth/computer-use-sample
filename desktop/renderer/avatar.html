@@ -10,7 +10,7 @@
   <body>
     <div class="avatar" id="avatar" data-state="idle" data-mood="neutral">
       <div class="caption" id="caption"><span id="caption-text"></span></div>
-      <div class="face-wrap" id="face-wrap" title="Jarvis · drag to move, click to open, right-click to adjust">
+      <div class="face-wrap" id="face-wrap" title="Jarvis · click to open, drag to move">
         <span class="ring one"></span>
         <span class="ring two"></span>
         <span class="ring work"></span>
@@ -50,10 +50,50 @@
         <span class="thought"><i></i><i></i><i></i></span>
         <span class="glyph">?</span>
       </div>
-      <!-- "The Jarvis line": the launch intro's wave. Always there; it moves with whoever is talking. -->
-      <div class="line" id="line" title="Click to talk · hold to keep talking · drag to move · right-click to adjust">
-        <canvas id="line-wave"></canvas>
-        <span class="line-hint" id="line-hint">Click to talk</span>
+      <!-- "The Jarvis line": the launch intro's wave. Always there; it moves with whoever is talking. On hover, ⋯ and ×
+           appear beside it (a native right-click menu can't open from this never-focused window, so they're drawn here). -->
+      <div class="dock" id="dock">
+        <div class="panel" id="close-panel" hidden>
+          <button type="button" data-action="snooze">Hide for an hour</button>
+          <button type="button" data-action="mode" data-value="talking">Only show while we talk</button>
+          <button type="button" data-action="mode" data-value="off">Turn off floating Jarvis</button>
+          <p>Bring it back in Settings → Voice.</p>
+        </div>
+        <div class="panel" id="options-panel" hidden>
+          <span class="panel-label">Show</span>
+          <div class="chips">
+            <button type="button" data-action="mode" data-value="always">Always</button>
+            <button type="button" data-action="mode" data-value="talking">While talking</button>
+            <button type="button" data-action="mode" data-value="off">Off</button>
+          </div>
+          <span class="panel-label">Size</span>
+          <div class="chips">
+            <button type="button" data-action="size" data-value="small">S</button>
+            <button type="button" data-action="size" data-value="medium">M</button>
+            <button type="button" data-action="size" data-value="large">L</button>
+          </div>
+          <span class="panel-label">Place</span>
+          <div class="chips">
+            <button type="button" data-action="spot" data-value="bottom-center" title="Bottom centre">▁ centre</button>
+            <button type="button" data-action="spot" data-value="bottom-right" title="Bottom right">▁ right</button>
+            <button type="button" data-action="spot" data-value="top-center" title="Top centre">▔ centre</button>
+            <button type="button" data-action="spot" data-value="top-right" title="Top right">▔ right</button>
+          </div>
+          <div class="panel-links">
+            <button type="button" data-action="open">Open Jarvis</button>
+            <button type="button" data-action="settings">Settings…</button>
+          </div>
+        </div>
+        <div class="line" id="line" title="Click to talk · hold to keep talking · drag to move">
+          <canvas id="line-wave"></canvas>
+          <span class="line-hint" id="line-hint">Click to talk</span>
+        </div>
+        <button type="button" class="dock-button more" id="dock-more" aria-label="Floating Jarvis options">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.5" /><circle cx="8" cy="8" r="1.5" /><circle cx="12.5" cy="8" r="1.5" /></svg>
+        </button>
+        <button type="button" class="dock-button close" id="dock-close" aria-label="Hide floating Jarvis">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg>
+        </button>
       </div>
     </div>
     <script src="avatar.js"></script>

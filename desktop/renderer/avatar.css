@@ -5,7 +5,31 @@ body { font-family: var(--font-sans); }
 
 .avatar { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 10px; padding-bottom: 6px; pointer-events: none; }
 
-/* ---------- the Jarvis line ---------- */
+/* ---------- the Jarvis line, its buttons and panels ---------- */
+
+.dock { position: relative; display: flex; align-items: center; justify-content: center; flex: none; pointer-events: auto; }
+/* ⋯ and × appear beside the line on hover (or while one of their panels is open). */
+.dock-button { position: absolute; top: 50%; width: 22px; height: 22px; margin-top: -11px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%; background: rgb(20 24 22 / 0.86); color: #fffdf4; box-shadow: 0 2px 8px rgb(0 0 0 / 0.35), inset 0 0 0 1px rgb(255 255 255 / 0.1); cursor: pointer; opacity: 0; transform: scale(0.6); transition: opacity 0.18s ease, transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.15s ease; }
+.dock-button svg { width: 12px; height: 12px; fill: currentColor; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.dock-button.more svg { stroke: none; }
+.dock-button.more { right: -30px; }
+.dock-button.close { right: -56px; }
+.dock-button:hover { background: rgb(52 56 54 / 0.95); }
+.dock-button.close:hover { background: #b3412e; }
+.dock:hover .dock-button, .dock.open .dock-button { opacity: 1; transform: none; }
+
+.panel { position: absolute; bottom: calc(100% + 8px); right: -60px; z-index: 5; width: 230px; padding: 6px; border-radius: 14px; background: rgb(20 24 22 / 0.94); color: #fffdf4; box-shadow: 0 12px 30px rgb(0 0 0 / 0.4), inset 0 0 0 1px rgb(255 255 255 / 0.08); backdrop-filter: blur(14px); font-size: 12px; display: flex; flex-direction: column; gap: 2px; animation: panel-in 0.2s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.panel[hidden] { display: none; }
+.panel button { font: inherit; color: inherit; text-align: left; padding: 7px 10px; border: 0; border-radius: 9px; background: transparent; cursor: pointer; }
+.panel button:hover { background: rgb(255 255 255 / 0.1); }
+.panel p { margin: 4px 10px 3px; color: rgb(255 253 244 / 0.55); font-size: 11px; }
+.panel-label { margin: 6px 10px 2px; color: rgb(255 253 244 / 0.55); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+.chips { display: flex; gap: 4px; padding: 0 4px; }
+.chips button { flex: 1; padding: 5px 4px; text-align: center; background: rgb(255 255 255 / 0.06); white-space: nowrap; font-size: 11px; }
+.chips button.on { background: #e2c4ff; color: #1a1a1a; }
+.panel-links { display: flex; margin-top: 4px; }
+.panel-links button { flex: 1; text-align: center; }
+@keyframes panel-in { from { opacity: 0; transform: translateY(6px) scale(0.96); } }
 
 .line { position: relative; width: 210px; height: 46px; flex: none; pointer-events: auto; cursor: pointer; opacity: 0; transform: scaleX(0.2); transition: opacity 0.35s ease, transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); }
 .avatar.shown .line { opacity: 1; transform: none; }
@@ -13,7 +37,7 @@ body { font-family: var(--font-sans); }
 /* Voice off: the line dims (clicking it still opens Jarvis and turns the voice on). */
 .avatar:not(.voice-on) .line canvas { opacity: 0.55; }
 .line-hint { position: absolute; left: 50%; top: -20px; transform: translate(-50%, 4px); padding: 3px 9px; border-radius: 999px; background: rgb(20 24 22 / 0.86); color: #fffdf4; font-size: 11px; white-space: nowrap; opacity: 0; transition: opacity 0.2s ease, transform 0.2s ease; pointer-events: none; }
-.avatar:not(.expanded) .line:hover .line-hint { opacity: 1; transform: translate(-50%, 0); }
+.avatar:not(.expanded) .dock:not(.open) .line:hover .line-hint { opacity: 1; transform: translate(-50%, 0); }
 .line.dragging { cursor: grabbing; }
 
 /* ---------- the face, rising above the line ---------- */

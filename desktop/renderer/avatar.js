@@ -9,6 +9,7 @@ const caption = document.getElementById("caption");
 const captionText = document.getElementById("caption-text");
 const faceWrap = document.getElementById("face-wrap");
 const line = document.getElementById("line");
+const dock = document.getElementById("dock");
 const lineHint = document.getElementById("line-hint");
 const lineCanvas = document.getElementById("line-wave");
 const lineDraw = lineCanvas.getContext("2d");
@@ -188,7 +189,8 @@ function drawLine(t) {
 const QUIET = { hearing: "Listening…", transcribing: "Got it…", thinking: "Thinking…" };
 
 let voiceOn = false;
-api.onState(({ state: nextState, mood: nextMood, caption: text, show, expanded, voiceOn: nextVoiceOn }) => {
+api.onState(({ state: nextState, mood: nextMood, caption: text, show, expanded, voiceOn: nextVoiceOn, options }) => {
+  if (options) markOptions(options);
   // Hiding fades out with the last expression in place.
   if (!show) {
     if (root.classList.contains("shown")) {
@@ -221,15 +223,51 @@ api.onLevel((level, source) => {
   }
 });
 
-// Clicks pass through the transparent window except over the line, face and caption.
-for (const element of [faceWrap, caption, line]) {
+// Clicks pass through the transparent window except over the line (with its buttons and panels), face and caption.
+for (const element of [faceWrap, caption, dock]) {
   element.addEventListener("mouseenter", () => api.interactive(true));
   element.addEventListener("mouseleave", () => api.interactive(false));
+}
+
+// × asks how to hide it; ⋯ (or a right-click anywhere on it) adjusts it. Leaving them for a moment closes them, since
+// a click elsewhere goes to another app and never reaches this page.
+const panels = { close: document.getElementById("close-panel"), options: document.getElementById("options-panel") };
+let panelTimer = null;
+function openPanel(name) {
+  const opening = panels[name].hidden;
+  for (const [key, panel] of Object.entries(panels)) panel.hidden = !(opening && key === name);
+  dock.classList.toggle("open", opening);
+}
+function closePanels() {
+  for (const panel of Object.values(panels)) panel.hidden = true;
+  dock.classList.remove("open");
+}
+function markOptions({ mode, size, spot }) {
+  const chosen = { mode, size, spot };
+  for (const button of panels.options.querySelectorAll(".chips button")) button.classList.toggle("on", chosen[button.dataset.action] === button.dataset.value);
+}
+document.getElementById("dock-close").addEventListener("click", () => openPanel("close"));
+document.getElementById("dock-more").addEventListener("click", () => openPanel("options"));
+for (const element of [faceWrap, caption, dock]) {
   element.addEventListener("contextmenu", (event) => {
     event.preventDefault();
-    api.menu();
+    openPanel("options");
   });
 }
+for (const panel of Object.values(panels)) {
+  panel.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    api.action(button.dataset.action, button.dataset.value ?? null);
+    // Size and place stay open so you can try a few; hiding choices close it.
+    if (!["size", "spot"].includes(button.dataset.action)) closePanels();
+  });
+}
+dock.addEventListener("mouseleave", () => {
+  clearTimeout(panelTimer);
+  panelTimer = setTimeout(closePanels, 1200);
+});
+dock.addEventListener("mouseenter", () => clearTimeout(panelTimer));
 
 // One gesture handler for the line and the face: moving more than a few pixels drags the window (both carry it).
 // Otherwise, on the line, a quick click talks once and holding talks until you let go; on the face, a click opens

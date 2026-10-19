@@ -2,24 +2,23 @@
 // from the launch intro, breathing above the Dock; when you talk, Jarvis thinks or speaks, or a task works on the
 // screen, the line moves with the voice and his expressive face rises above it with a caption. It never takes focus
 // (a non-activating panel on macOS) and lets clicks through everywhere but the line, face and caption. Click the line
-// to talk, hold it to talk for as long as you hold, drag it anywhere (it snaps to the presets), right-click it to
-// adjust: when it shows, its size, where it sits, or hide it for an hour.
+// to talk, hold it to talk for as long as you hold, drag it anywhere (it snaps to the presets). Its × hides it (for an
+// hour, to only while talking, or off) and ⋯ adjusts when it shows, its size and where it sits. Those are drawn in
+// the page: macOS won't open a native menu from a window that never takes focus.
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-import { BrowserWindow, ipcMain, Menu, screen } from "electron";
+import { BrowserWindow, ipcMain, screen } from "electron";
 
 import { FACE_SIZES, faceMode, faceScale, faceState, faceVisible, moodFor, placeFace, snapFace } from "./avatar-mood.mjs";
 
-const BASE = { width: 420, height: 250 };
+const BASE = { width: 420, height: 264 };
 // After a conversation the face lingers this long before settling back into the line (or hiding), so a quick next
 // question doesn't make it pop out and in.
 const LINGER_MS = 2200;
 const DONE_MS = 2600;
 const SNOOZE_MS = 60 * 60 * 1000;
-const SPOT_LABELS = { "bottom-center": "Bottom centre", "bottom-right": "Bottom right", "top-center": "Top centre", "top-right": "Top right" };
-const MODE_LABELS = { always: "Always (the Jarvis line)", talking: "Only while talking or working", off: "Off" };
-const SIZE_LABELS = { small: "Small", medium: "Medium", large: "Large" };
+const SPOTS = ["bottom-center", "bottom-right", "top-center", "top-right"];
 
 export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, onPrefs, log }) {
   // A preset ({ spot }) or a dragged position ({ x, y }). (avatar.json held the old face-only window's spot.)
@@ -124,6 +123,8 @@ export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, 
       mood: expanded ? face.mood : "neutral",
       caption: expanded ? face.text : "",
       voiceOn: face.voice !== "off",
+      // What ⋯ shows as chosen.
+      options: { mode, size, spot: readPlace()?.spot ?? (Number.isFinite(readPlace()?.x) ? null : "bottom-center") },
     });
     if (!shown) {
       target.showInactive();
@@ -154,35 +155,39 @@ export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, 
   }
 
   function setMode(next) {
+    const changed = faceMode(next) !== mode;
     mode = faceMode(next);
+    // Choosing a mode again (in Settings or ⋯) ends an hour's snooze.
+    if (changed) snoozedUntil = 0;
     void publish();
   }
 
   function setSize(next) {
     size = Object.hasOwn(FACE_SIZES, next) ? next : "medium";
     applyBounds();
+    void publish();
   }
 
-  function popMenu() {
-    const place = readPlace();
-    const template = [
-      { label: "Open Jarvis", click: () => onOpen() },
-      { label: "Talk to Jarvis", enabled: face.voice !== "off", click: () => onTalk("tap") },
-      { type: "separator" },
-      { label: "Show", submenu: Object.entries(MODE_LABELS).map(([value, label]) => ({ label, type: "radio", checked: mode === value, click: () => { setMode(value); onPrefs({ floatingFace: value }); } })) },
-      { label: "Size", submenu: Object.entries(SIZE_LABELS).map(([value, label]) => ({ label, type: "radio", checked: size === value, click: () => { setSize(value); onPrefs({ floatingSize: value }); } })) },
-      {
-        label: "Position",
-        submenu: [
-          ...Object.entries(SPOT_LABELS).map(([spot, label]) => ({ label, type: "radio", checked: place?.spot === spot || (!place && spot === "bottom-center"), click: () => { writePlace({ spot }); applyBounds(); } })),
-          { label: "Where I dragged it", type: "radio", checked: Number.isFinite(place?.x), enabled: Number.isFinite(place?.x) },
-        ],
-      },
-      { label: "Hide for an hour", visible: mode === "always", click: () => { snoozedUntil = Date.now() + SNOOZE_MS; setTimeout(() => void publish(), SNOOZE_MS + 1000); void publish(); } },
-      { type: "separator" },
-      { label: "Floating Jarvis settings…", click: () => onSettings() },
-    ];
-    Menu.buildFromTemplate(template).popup({ window: win ?? undefined });
+  // A choice from × or ⋯. Mode and size are settings the main window owns, so they're sent there to be saved (and come
+  // back through setPrefs); the place is this window's own.
+  function act(name, value) {
+    if (name === "snooze") {
+      snoozedUntil = Date.now() + SNOOZE_MS;
+      setTimeout(() => void publish(), SNOOZE_MS + 1000);
+      void publish();
+    } else if (name === "mode" && ["always", "talking", "off"].includes(value)) {
+      snoozedUntil = 0;
+      setMode(value);
+      onPrefs({ floatingFace: value });
+    } else if (name === "size" && Object.hasOwn(FACE_SIZES, value)) {
+      setSize(value);
+      onPrefs({ floatingSize: value });
+    } else if (name === "spot" && SPOTS.includes(value)) {
+      writePlace({ spot: value });
+      applyBounds();
+      void publish();
+    } else if (name === "open") onOpen();
+    else if (name === "settings") onSettings();
   }
 
   ipcMain.on("avatar:interactive", (_event, on) => win?.setIgnoreMouseEvents(!on, { forward: true }));
@@ -191,6 +196,8 @@ export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, 
     // Something new may have come in while it faded out.
     const resting = mode === "always" && Date.now() >= snoozedUntil;
     if (mode === "off" || (!faceVisible(face.voice, face.task) && !lingering && !resting)) {
+      // It hid with the pointer over it (× was just clicked): let clicks through again for when it next shows.
+      win.setIgnoreMouseEvents(true, { forward: true });
       win.hide();
       shown = false;
     }
@@ -210,12 +217,13 @@ export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, 
     const snapped = snapFace({ x, y }, bounds, area);
     writePlace(snapped.spot ? { spot: snapped.spot } : { x: snapped.x, y: snapped.y });
     if (snapped.spot) win.setPosition(snapped.x, snapped.y, true);
+    void publish();
   });
   ipcMain.on("avatar:open", () => onOpen());
   ipcMain.on("avatar:talk", (_event, kind) => {
     if (["tap", "hold-start", "hold-end"].includes(kind)) onTalk(kind);
   });
-  ipcMain.on("avatar:menu", () => popMenu());
+  ipcMain.on("avatar:action", (_event, name, value) => act(name, value));
   // Screens added, removed or rearranged: a dragged spot that's now off screen falls back to its preset.
   for (const event of ["display-added", "display-removed", "display-metrics-changed"]) screen.on(event, () => applyBounds());
 
