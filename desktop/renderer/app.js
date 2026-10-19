@@ -2089,14 +2089,15 @@ async function renderConnections() {
     ? result.error
     : result.configured
       ? "Connected apps let Jarvis read and send for you. It always asks before sending or posting."
-      : "Connect Gmail, Slack, X and more through Composio. Add your free Composio key to start.";
+      : "Optional: with a free Composio key Jarvis can use Gmail, Calendar, Slack and more through their APIs. Without one, it uses the sites you're signed in to below.";
   list.replaceChildren(
     ...result.apps.map((app) => {
       const row = el("li", `app-row ${app.connected ? "on" : ""}`);
       const action = el("button", `button ${app.connected ? "ghost" : ""}`, app.connected ? "Disconnect" : "Connect");
       action.type = "button";
-      action.disabled = !result.configured;
       action.addEventListener("click", async () => {
+        // Without a Composio key nothing can connect; a greyed-out button that silently does nothing looked broken.
+        if (!result.configured) return askForComposioKey(app.name);
         action.disabled = true;
         const outcome = app.connected ? await bridge.disconnectApp(app.slug) : await bridge.connectApp(app.slug);
         if (!outcome.ok) toast(outcome.error ?? "That didn't work.", "error");
@@ -2110,6 +2111,7 @@ async function renderConnections() {
       return row;
     }),
   );
+  if (!result.configured && pendingConnect) $("#composio-key").classList.add("needed");
   const sites = $("#site-list");
   if (sites.childElementCount === 0) {
     for (const [name, url] of SIGN_IN_SITES) {
@@ -2128,6 +2130,18 @@ async function renderConnections() {
       sites.append(button);
     }
   }
+}
+
+// The app the user tried to connect before adding a key, so the next message can tell them what to press.
+let pendingConnect = null;
+function askForComposioKey(appName) {
+  pendingConnect = appName;
+  const box = $("#composio-key");
+  box.hidden = false;
+  box.classList.add("needed");
+  box.scrollIntoView({ behavior: "smooth", block: "center" });
+  $("#composio-key-input").focus();
+  toast(`To connect ${appName}, Jarvis first needs a free Composio key: sign up at composio.dev, copy the API key from Settings → API keys, and paste it here.`, "info");
 }
 
 function appHost(slug) {
@@ -2318,7 +2332,10 @@ $("#composio-key-save").addEventListener("click", async () => {
     return;
   }
   $("#composio-key-input").value = "";
-  toast("Composio key saved. Restart the runner so tasks can use connected apps.", "ok");
+  // The runner reads the key at the start of every task, so nothing needs restarting.
+  toast(pendingConnect ? `Key saved. Now press Connect next to ${pendingConnect} again.` : "Composio key saved.", "ok");
+  pendingConnect = null;
+  $("#composio-key").classList.remove("needed");
   await renderConnections();
 });
 $("#settings").addEventListener("change", (event) => {
