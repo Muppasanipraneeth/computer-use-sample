@@ -86,10 +86,21 @@ export function validateAuthUpdates(updates) {
     if (typeof value !== "string" || !value.trim() || value.includes("\n") || value.includes("\r")) {
       throw new Error("Enter a single-line value.");
     }
-    clean[key] = value.trim();
+    clean[key] = pastedValue(key, value);
+    if (!clean[key]) throw new Error("Enter a single-line value.");
   }
   if (Object.keys(clean).length === 0) throw new Error("Nothing to save.");
   return clean;
+}
+
+/**
+ * Dashboards often offer the key as a whole env line (`COMPOSIO_API_KEY=ak_…`, sometimes quoted or with `export`).
+ * Saving that as the key fails with a confusing "rejected" error, so a pasted line for this same field becomes its value.
+ */
+function pastedValue(key, value) {
+  const trimmed = value.trim();
+  const line = trimmed.match(new RegExp(`^(?:export\\s+)?${key}\\s*[=:]\\s*(.*)$`));
+  return (line ? line[1] : trimmed).trim().replace(/^(["'])(.*)\1$/, "$2").trim();
 }
 
 export function authSnapshot(env, accounts, ompDetail = null) {

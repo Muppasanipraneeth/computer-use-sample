@@ -43,6 +43,13 @@ test("auth snapshot reports presence without the key", () => {
   assert.equal(authSnapshot({ CLOUDFLARE_API_TOKEN: "cf-secret" }, []).cloudflare, false, "a token without an account id is unusable");
   assert.equal(/sk-secret|cf-secret|ck-secret/.test(JSON.stringify(snapshot)), false);
   assert.deepEqual(validateAuthUpdates({ COMPOSIO_API_KEY: " ck " }), { COMPOSIO_API_KEY: "ck" });
+  // Copied as a whole env line from a dashboard: keep only the value.
+  for (const pasted of ["COMPOSIO_API_KEY=ak_123", 'export COMPOSIO_API_KEY="ak_123"', "COMPOSIO_API_KEY: 'ak_123'", '"ak_123"']) {
+    assert.deepEqual(validateAuthUpdates({ COMPOSIO_API_KEY: pasted }), { COMPOSIO_API_KEY: "ak_123" }, pasted);
+  }
+  // Another field's name is not stripped, and a name with no value is no value.
+  assert.deepEqual(validateAuthUpdates({ OPENAI_API_KEY: "COMPOSIO_API_KEY=x" }), { OPENAI_API_KEY: "COMPOSIO_API_KEY=x" });
+  assert.throws(() => validateAuthUpdates({ COMPOSIO_API_KEY: "COMPOSIO_API_KEY=" }), /single-line value/);
 });
 
 test("env round trip updates one key and keeps comments", () => {
