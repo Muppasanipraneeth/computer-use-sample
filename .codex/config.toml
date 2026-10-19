@@ -1,0 +1,3 @@
+# Unreal Editor's MCP server (ModelContextProtocol plugin). Codex reads project config only for trusted projects.
+[mcp_servers.unreal-mcp]
+url = "http://127.0.0.1:8000/mcp"
