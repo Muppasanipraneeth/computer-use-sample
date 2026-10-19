@@ -21,8 +21,8 @@ chromium.launchServer = async (...args) => {
   return browser;
 };
 
-const dataRoot = process.env.CUA_TEST_DATA_ROOT;
-if (!dataRoot) throw new Error("CUA_TEST_DATA_ROOT is required.");
+const dataRoot = process.env.JARVIS_TEST_DATA_ROOT;
+if (!dataRoot) throw new Error("JARVIS_TEST_DATA_ROOT is required.");
 const app = createServer({ dataRoot });
 let closing = false;
 const close = () => {

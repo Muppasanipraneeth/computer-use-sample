@@ -10,7 +10,7 @@ from app.lab_catalog import list_scenarios
 from app.lab_server import start_workspace_lab_server
 from app.processes import OwnedProcess
 
-pytestmark = [pytest.mark.browser, pytest.mark.skipif(os.environ.get("CUA_BROWSER_TESTS") != "1", reason="Set CUA_BROWSER_TESTS=1 to run Chromium lab tests.")]
+pytestmark = [pytest.mark.browser, pytest.mark.skipif(os.environ.get("JARVIS_BROWSER_TESTS") != "1", reason="Set JARVIS_BROWSER_TESTS=1 to run Chromium lab tests.")]
 
 
 @pytest.fixture

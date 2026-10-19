@@ -11,6 +11,7 @@ from app.browser import (
     launch_browser_session,
     wait_for_devtools_port,
 )
+from app.errors import RunnerCoreError
 from app.processes import OwnedProcess, child_environment
 
 
@@ -46,7 +47,7 @@ async def browser_harness(monkeypatch):
     browser = SimpleNamespace(new_context=AsyncMock(return_value=context), close=AsyncMock())
     playwright = SimpleNamespace(
         chromium=SimpleNamespace(
-            executable_path="/test/chromium",
+            executable_path=__file__,  # Any existing file: launch checks the binary is installed before spawning.
             connect_over_cdp=AsyncMock(return_value=browser),
         ),
         stop=AsyncMock(),
@@ -79,7 +80,7 @@ async def launch(tmp_path, **kwargs):
 async def test_launch_owns_process_profile_and_uses_public_cdp_apis(browser_harness, tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "do-not-pass")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "do-not-pass")
-    monkeypatch.setenv("CUA_COMPATIBLE_API_KEY", "do-not-pass")
+    monkeypatch.setenv("JARVIS_COMPATIBLE_API_KEY", "do-not-pass")
     session = await launch(tmp_path)
     assert session.target_label == "Kanban lab"
     assert session.viewport == {"height": 900, "width": 1440}
@@ -87,7 +88,7 @@ async def test_launch_owns_process_profile_and_uses_public_cdp_apis(browser_harn
     assert "--no-startup-window" in browser_harness.child.command
     assert "OPENAI_API_KEY" not in browser_harness.child.environment
     assert "ANTHROPIC_API_KEY" not in browser_harness.child.environment
-    assert "CUA_COMPATIBLE_API_KEY" not in browser_harness.child.environment
+    assert "JARVIS_COMPATIBLE_API_KEY" not in browser_harness.child.environment
     browser_harness.playwright.chromium.connect_over_cdp.assert_awaited_once_with(
         "http://127.0.0.1:45321", timeout=15000
     )
@@ -97,6 +98,18 @@ async def test_launch_owns_process_profile_and_uses_public_cdp_apis(browser_harn
     await asyncio.gather(session.close(), session.close())
     assert browser_harness.child.close_count == 1
     assert not profile.exists()
+    browser_harness.playwright.stop.assert_awaited_once()
+
+
+async def test_missing_chromium_names_the_install_command_and_cleans_up(browser_harness, tmp_path, monkeypatch):
+    browser_harness.playwright.chromium.executable_path = str(tmp_path / "not-installed" / "chrome")
+    spawned = AsyncMock()
+    monkeypatch.setattr("app.browser.OwnedProcess.spawn", spawned)
+    with pytest.raises(RunnerCoreError) as raised:
+        await launch(tmp_path)
+    assert raised.value.code == "browser_not_installed"
+    assert "pnpm python:playwright:install" in (raised.value.hint or "")
+    spawned.assert_not_awaited()
     browser_harness.playwright.stop.assert_awaited_once()
 
 
@@ -111,6 +124,21 @@ async def test_browser_preview_metadata_and_frontmost(browser_harness, tmp_path)
         assert capture["capturedAt"].endswith("Z")
         await session.frontmost()
         browser_harness.page.bring_to_front.assert_awaited_once()
+    finally:
+        await session.close()
+
+
+async def test_closed_lab_window_explains_itself(browser_harness, tmp_path):
+    session = await launch(tmp_path)
+    try:
+        browser_harness.page.title = AsyncMock(side_effect=Exception("Page.title: Target page, context or browser has been closed"))
+        with pytest.raises(RunnerCoreError) as raised:
+            await session.read_state()
+        assert raised.value.code == "lab_browser_closed"
+        assert "Any task" in (raised.value.hint or "")
+        browser_harness.page.title = AsyncMock(side_effect=ValueError("unrelated"))
+        with pytest.raises(ValueError):
+            await session.read_state()
     finally:
         await session.close()
 
@@ -198,7 +226,7 @@ async def test_devtools_endpoint_wait_reports_exit_timeout_and_cancel(tmp_path):
         await wait_for_devtools_port(tmp_path, child, signal)
 
 
-@pytest.mark.skipif(os.environ.get("CUA_BROWSER_TESTS") != "1", reason="Opt-in real Chromium; never uses desktop input")
+@pytest.mark.skipif(os.environ.get("JARVIS_BROWSER_TESTS") != "1", reason="Opt-in real Chromium; never uses desktop input")
 async def test_real_owned_chromium_cdp_operations_and_cleanup(tmp_path):
     from playwright.async_api import async_playwright
 

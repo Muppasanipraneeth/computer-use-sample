@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.errors import RunnerCoreError
-from app.scenario_runtime import RunExecutionContext, execute_scenario
+from app.local_browser_host import PROFILE_IN_USE
+from app.scenario_runtime import RunExecutionContext, browser_profile_directory, execute_scenario
+from app.screen import RunScreen, ScreenLock
 
 
 @pytest.fixture
@@ -16,6 +18,8 @@ def flow(monkeypatch, tmp_path):
     page = SimpleNamespace(url="http://127.0.0.1/lab", bring_to_front=AsyncMock())
     browser = SimpleNamespace(close=AsyncMock(), frontmost=AsyncMock(), page=page, target_label="lab", execution=None)
     server = SimpleNamespace(close=AsyncMock(), url_for=lambda _: "http://127.0.0.1/lab")
+    browser_lease = SimpleNamespace(endpoint="http://127.0.0.1:9222", close=AsyncMock())
+    browser_host = SimpleNamespace(lease=AsyncMock(return_value=browser_lease))
     launch_worker = AsyncMock(return_value=worker)
     launch_browser = AsyncMock(return_value=browser)
     monkeypatch.setattr("app.responses_loop.create_default_responses_client", lambda: client)
@@ -26,13 +30,16 @@ def flow(monkeypatch, tmp_path):
     monkeypatch.setattr("app.scenario_runtime.hold_browser", AsyncMock())
     def context(lab="kanban", prompt="Do the task"):
         scenario = {"kanban": "kanban-reprioritize-sprint", "paint": "paint-draw-poster", "booking": "booking-complete-reservation"}[lab]
+        signal = asyncio.Event()
         return RunExecutionContext(detail={"run": {"labId": lab, "scenarioId": scenario, "browserMode": "headful",
                                    "prompt": prompt, "model": "fixture", "maxResponseTurns": 24},
-                                   "workspacePath": str(tmp_path)}, signal=asyncio.Event(), screenshot_directory=Path(tmp_path),
+                                   "workspacePath": str(tmp_path)}, signal=signal, screenshot_directory=Path(tmp_path),
                                    emit_event=AsyncMock(), capture_screenshot=AsyncMock(),
-                                   sync_browser_state=AsyncMock(), complete_run=AsyncMock())
+                                   sync_browser_state=AsyncMock(), complete_run=AsyncMock(), next_turn=AsyncMock(return_value=[]),
+                                   screen=RunScreen(ScreenLock(), signal), browser_host=browser_host)
     return SimpleNamespace(context=context, worker=worker, browser=browser, server=server, client=client,
-                           launch_worker=launch_worker, launch_browser=launch_browser)
+                           launch_worker=launch_worker, launch_browser=launch_browser,
+                           browser_host=browser_host, browser_lease=browser_lease)
 
 
 @pytest.mark.parametrize("lab", ["kanban", "paint", "booking"])
@@ -74,6 +81,8 @@ async def test_omp_desktop_uses_the_saved_account_without_an_api_key(flow, monke
     assert loop.await_args.kwargs["selector"] == "openai-codex/gpt-6-astra"
     assert context.complete_run.call_args.kwargs["notes"] == ["omp final"]
     flow.launch_browser.assert_not_awaited()
+    # omp desktop runs capture the screen only when the model asks.
+    context.capture_screenshot.assert_not_awaited()
 
 
 async def test_desktop_target_does_not_open_a_web_lab(flow):
@@ -86,6 +95,7 @@ async def test_desktop_target_does_not_open_a_web_lab(flow):
     flow.worker.close.assert_awaited_once()
     flow.client.close.assert_awaited_once()
     assert context.complete_run.call_args.kwargs["notes"] == ["model final"]
+    assert [entry.args[1] for entry in context.capture_screenshot.await_args_list] == ["desktop-loaded", "desktop-final"]
 
 
 async def test_unknown_scenario_fails_before_desktop_start(flow):
@@ -148,3 +158,41 @@ async def test_paint_completion_does_not_read_or_export_the_draft(flow, saved):
     flow.browser.close.assert_awaited_once()
     flow.server.close.assert_awaited_once()
     flow.client.close.assert_awaited_once()
+
+
+async def test_local_background_browser_leases_the_shared_host_on_the_jarvis_profile(flow, monkeypatch, tmp_path):
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.setenv("JARVIS_BROWSER_PROFILE", str(tmp_path / "profile"))
+    context = flow.context()
+    context.detail["run"]["labId"] = "desktop"
+    context.detail["run"]["scenarioId"] = "any-task"
+    await execute_scenario(context)
+    flow.browser_host.lease.assert_awaited_once_with(str(tmp_path / "profile"))
+    environment = flow.launch_worker.await_args.kwargs["extra_environment"]
+    assert environment["JARVIS_WEB_INSTRUMENTS"] == "1"
+    assert environment["JARVIS_BROWSER_CDP"] == "http://127.0.0.1:9222"
+    assert "JARVIS_BROWSER_PROFILE" not in environment
+    # The run gives its share back after its worker (and so its CDP connection) is gone.
+    flow.browser_lease.close.assert_awaited_once()
+    assert flow.worker.screen is context.screen
+
+
+async def test_busy_profile_leaves_the_run_going_and_tells_read_why(flow, monkeypatch):
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    flow.browser_host.lease.side_effect = RunnerCoreError(PROFILE_IN_USE, code="browser_profile_in_use")
+    context = flow.context()
+    context.detail["run"]["labId"] = "desktop"
+    context.detail["run"]["scenarioId"] = "any-task"
+    await execute_scenario(context)
+    environment = flow.launch_worker.await_args.kwargs["extra_environment"]
+    assert environment["JARVIS_BROWSER_UNAVAILABLE"] == PROFILE_IN_USE
+    assert "JARVIS_BROWSER_CDP" not in environment
+    context.complete_run.assert_awaited_once()
+
+
+def test_browser_profile_lives_in_the_desktop_apps_user_data(monkeypatch, tmp_path):
+    monkeypatch.delenv("JARVIS_BROWSER_PROFILE", raising=False)
+    monkeypatch.setattr("app.scenario_runtime.desktop_user_data", lambda: tmp_path / "Jarvis")
+    assert browser_profile_directory() == str(tmp_path / "Jarvis" / "browser-profile")

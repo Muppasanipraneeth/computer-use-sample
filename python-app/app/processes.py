@@ -27,8 +27,9 @@ async def bounded(operation: Awaitable[T], seconds: float) -> T:
 
 
 def child_environment() -> dict[str, str]:
-    """Model credentials stay in the agent process, not the desktop worker."""
-    secret_names = {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CUA_COMPATIBLE_API_KEY"}
+    """Model, Cloudflare and Composio credentials stay in the agent process, not the desktop worker."""
+    secret_names = {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "JARVIS_COMPATIBLE_API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID",
+                    "COMPOSIO_API_KEY"}
     return {key: value for key, value in os.environ.items() if key.upper() not in secret_names}
 
 

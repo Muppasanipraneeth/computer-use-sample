@@ -1,13 +1,24 @@
 """The runner's camelCase HTTP and version-3 replay contracts.
 
-Optional properties are omitted on the wire. Start requests reject unknown fields.
+Optional properties are omitted on the wire, except fields listed in `nullable`, where null means
+"no limit". Start requests reject unknown fields.
 """
 import re
 from datetime import datetime
 from types import UnionType
-from typing import Annotated, Any, Literal, TypeVar, Union, get_args, get_origin
+from typing import Annotated, Any, ClassVar, Literal, TypeVar, Union, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    StringConstraints,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from pydantic.alias_generators import to_camel
 
 Text = Annotated[str, Field(min_length=1)]
@@ -34,13 +45,15 @@ def is_integer_annotation(annotation: Any) -> bool:
 
 class WireModel(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore", strict=True)
+    nullable: ClassVar[frozenset[str]] = frozenset()
 
     @model_validator(mode="before")
     @classmethod
     def reject_explicit_null(cls, value: Any) -> Any:
         if isinstance(value, dict):
             known = set(cls.model_fields) | {field.alias for field in cls.model_fields.values()}
-            if any(item is None for key, item in value.items() if key in known):
+            nullable = cls.nullable | {cls.model_fields[name].alias for name in cls.nullable}
+            if any(item is None for key, item in value.items() if key in known and key not in nullable):
                 raise ValueError("Optional properties must be omitted, not null.")
             value = dict(value)
             for name, field in cls.model_fields.items():
@@ -49,6 +62,14 @@ class WireModel(BaseModel):
                     if isinstance(item, float) and item.is_integer() and is_integer_annotation(field.annotation):
                         value[key] = int(item)
         return value
+
+    @model_serializer(mode="wrap")
+    def keep_explicit_null(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        for name in self.nullable & self.model_fields_set:
+            if getattr(self, name) is None:
+                data[(type(self).model_fields[name].alias or name) if info.by_alias else name] = None
+        return data
 
     def wire(self) -> dict[str, Any]:
         return self.model_dump(by_alias=True, exclude_none=True, mode="json")
@@ -78,19 +99,40 @@ class RunSummary(WireModel):
     notes: list[str]
 
 
+class RunAttachment(WireModel):
+    kind: Literal["image", "folder"]
+    path: Text
+    name: Text
+
+
+class Attachment(WireModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=False, validate_by_name=False)
+    kind: Literal["image", "folder"]
+    path: Text
+
+
+Attachments = Annotated[list[Attachment], Field(max_length=10)]
+
+
+
 class RunRecord(WireModel):
+    nullable = frozenset({"max_response_turns"})
     id: Text
     scenario_id: Text
     lab_id: LabId
     browser_mode: BrowserMode
     model: Text
-    max_response_turns: TurnBudget
+    max_response_turns: TurnBudget | None
     prompt: Text
     status: RunStatus
     started_at: str
     completed_at: str | None = None
     duration_ms: Count | None = None
     summary: RunSummary | None = None
+    # Live runs always carry it; records written before pause existed (and the shared fixtures) omit it, meaning false.
+    paused: bool | None = None
+    # Images point at their copy in the run directory, folders at the original. Omitted like paused on older records.
+    attachments: list[RunAttachment] | None = None
 
     _dates = field_validator("started_at", "completed_at")(valid_timestamp)
 
@@ -140,11 +182,20 @@ class BrowserState(WireModel):
 
 class StartRunRequest(WireModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=False, validate_by_name=False)
+    nullable = frozenset({"max_response_turns"})
     scenario_id: Text
     browser_mode: BrowserMode | None = None
     max_response_turns: TurnBudget | None = None
     prompt: Text
     model: Text | None = None
+    attachments: Attachments | None = None
+
+
+class SteerRunRequest(WireModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=False, validate_by_name=False)
+    message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+    mode: Literal["add", "redirect"]
+    attachments: Attachments | None = None
 
 
 class RunDetail(WireModel):

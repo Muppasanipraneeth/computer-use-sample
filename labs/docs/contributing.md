@@ -26,7 +26,7 @@ On Linux, use `pnpm playwright:install:with-deps` to include system libraries. N
 ```bash
 pnpm python:install
 pnpm python:playwright:install
-CUA_BROWSER_TESTS=1 uv run --project python-app pytest python-app/tests/test_browser_labs.py
+JARVIS_BROWSER_TESTS=1 uv run --project python-app pytest python-app/tests/test_browser_labs.py
 ```
 
 For shared lab changes, run both backend integration suites and the shared tests. These checks need no API key and do not control the host desktop. `pnpm check:python` runs the full native Python suite; `pnpm check` combines all main check groups.
@@ -36,8 +36,8 @@ For shared lab changes, run both backend integration suites and the shared tests
 Live tests load the root `.env` and call the OpenAI API. Complete that backend's browser/desktop setup first, stop any running sample launch, then explicitly run one suite:
 
 ```bash
-pnpm --filter cua-sample-labs test:live
-CUA_LIVE_TESTS=1 uv run --project python-app pytest python-app/tests/test_live_labs.py -m live
+pnpm --filter jarvis-labs test:live
+JARVIS_LIVE_TESTS=1 uv run --project python-app pytest python-app/tests/test_live_labs.py -m live
 ```
 
 Python live tests control the real mouse and keyboard. Use a dedicated graphical session and keep the lab window in front. Live tests are excluded from ordinary checks and CI.

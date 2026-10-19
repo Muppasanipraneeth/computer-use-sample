@@ -24,7 +24,7 @@ def main() -> None:
 
         async def startup(self, sockets: list[socket.socket] | None = None) -> None:
             await super().startup(sockets)
-            if os.environ.get("CUA_MANAGED_LAUNCH") == "1" and self.started:
+            if os.environ.get("JARVIS_MANAGED_LAUNCH") == "1" and self.started:
                 # Start only after binding: failed startup must not wait on stdin.
                 self.parent_input = asyncio.create_task(self.watch_parent())
 

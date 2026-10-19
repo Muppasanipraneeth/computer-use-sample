@@ -41,6 +41,32 @@
     "valid": false
   },
   {
+    "name": "start without turn limit",
+    "schema": "startRunRequestSchema",
+    "value": {
+      "scenarioId": "paint-draw-poster",
+      "prompt": "Draw a smiley face.",
+      "maxResponseTurns": null
+    },
+    "valid": true
+  },
+  {
+    "name": "run record without turn limit",
+    "schema": "runRecordSchema",
+    "value": {
+      "id": "fixture-run",
+      "scenarioId": "paint-draw-poster",
+      "labId": "paint",
+      "browserMode": "headless",
+      "model": "fixture-model",
+      "maxResponseTurns": null,
+      "prompt": "Draw a smiley face.",
+      "status": "running",
+      "startedAt": "2026-09-03T00:00:00.000Z"
+    },
+    "valid": true
+  },
+  {
     "name": "reject removed verificationEnabled option",
     "schema": "startRunRequestSchema",
     "value": {

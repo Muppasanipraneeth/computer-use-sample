@@ -33,9 +33,10 @@ async def test_routes_and_capabilities(api):
     assert capabilities["instanceId"] == app.state.instance_id
     assert "verificationEnabled" not in capabilities["defaults"]
     scenarios = (await client.get("/api/scenarios")).json()
-    assert len(scenarios) == 4
+    assert len(scenarios) == 5
     assert all("verification" not in scenario for scenario in scenarios)
     assert (await client.get("/api/runs/active")).json() is None
+    assert (await client.get("/api/runs/running")).json() == []
     result = await client.post("/api/runs", json={"scenarioId": "paint-draw-poster", "prompt": "Draw"})
     assert result.status_code == 202
     run_id = result.json()["runId"]
@@ -45,6 +46,27 @@ async def test_routes_and_capabilities(api):
     assert (await client.get(f"/api/runs/{run_id}/replay")).json()["version"] == 3
     assert (await client.post("/api/scenarios/paint-draw-poster/reset")).json()["scenarioId"] == "paint-draw-poster"
     assert (await client.get("/api/runs/active")).json() is None
+    assert (await client.get("/api/runs/running")).json() == []
+
+
+async def test_running_lists_every_run_in_start_order_and_the_cap_is_a_409(api):
+    _, _, client = api
+    started = []
+    for scenario in ("paint-draw-poster", "kanban-reprioritize-sprint", "paint-draw-poster"):
+        result = await client.post("/api/runs", json={"scenarioId": scenario, "prompt": "Work"})
+        assert result.status_code == 202
+        started.append(result.json()["runId"])
+    running = (await client.get("/api/runs/running")).json()
+    assert [detail["run"]["id"] for detail in running] == started
+    assert all(detail["run"]["status"] == "running" and detail["eventStreamUrl"] for detail in running)
+    assert (await client.get("/api/runs/active")).json()["run"]["id"] == started[-1]
+    refused = await client.post("/api/runs", json={"scenarioId": "paint-draw-poster", "prompt": "One more"})
+    assert refused.status_code == 409
+    assert refused.json()["code"] == "run_limit_reached"
+    assert refused.json()["error"] == "Jarvis is already doing 3 tasks. Stop one or wait for it to finish."
+    await client.post(f"/api/runs/{started[-1]}/stop")
+    assert (await client.get("/api/runs/active")).json()["run"]["id"] == started[1]
+    assert (await client.post("/api/runs", json={"scenarioId": "paint-draw-poster", "prompt": "Room again"})).status_code == 202
 
 
 @pytest.mark.parametrize("payload", [{"scenarioId": "paint-draw-poster", "prompt": "Draw", "mode": "code"},
@@ -80,12 +102,12 @@ async def test_origin_and_backend_guard(api):
         denied = await client.post("/api/runs", headers={"Origin": origin}, json={})
         assert denied.status_code == 403
     for expected in ("javascript", ""):
-        denied = await client.post("/api/runs", headers={"X-CUA-Backend": expected}, json={})
+        denied = await client.post("/api/runs", headers={"X-Jarvis-Backend": expected}, json={})
         assert denied.status_code == 409
         assert denied.json()["code"] == "backend_mismatch"
     allowed = await client.options("/api/runs", headers={"Origin": "http://localhost:3000"})
     assert allowed.status_code == 204
-    assert "X-CUA-Backend" in allowed.headers["access-control-allow-headers"]
+    assert "X-Jarvis-Backend" in allowed.headers["access-control-allow-headers"]
     assert not manager.storage.root.exists()
 
 
@@ -205,3 +227,107 @@ async def test_unsupported_saved_replay_returns_409_without_modifying_history(ap
         assert response.status_code == 409
         assert response.json()["code"] == "unsupported_replay_version"
         assert replay_path.read_bytes() == original
+
+
+async def test_steer_pause_and_resume_report_state_and_events(api):
+    _, manager, client = api
+    run_id = (await client.post("/api/runs", json={"scenarioId": "paint-draw-poster", "prompt": "Draw"})).json()["runId"]
+    assert (await client.get(f"/api/runs/{run_id}")).json()["run"]["paused"] is False
+
+    steered = await client.post(f"/api/runs/{run_id}/steer", json={"message": "  Use red.  ", "mode": "add"})
+    assert (steered.status_code, steered.json()) == (202, {"ok": True})
+    assert manager.contexts[run_id].steers == [{"mode": "add", "message": "Use red.", "attachments": []}]
+    paused = await client.post(f"/api/runs/{run_id}/pause")
+    assert (paused.status_code, paused.json()) == (200, {"ok": True, "paused": True})
+    assert (await client.get("/api/runs/active")).json()["run"]["paused"] is True
+    assert (await client.post(f"/api/runs/{run_id}/steer", json={"message": "Make it big.", "mode": "redirect"})).status_code == 202
+    assert (await client.get(f"/api/runs/{run_id}")).json()["run"]["paused"] is True, "a follow-up does not resume"
+    assert (await client.post(f"/api/runs/{run_id}/resume")).json() == {"ok": True, "paused": False}
+    detail = (await client.get(f"/api/runs/{run_id}")).json()
+    assert detail["run"]["paused"] is False
+    progress = [(event["message"], event["level"], event.get("detail")) for event in detail["events"] if event["type"] == "run_progress"]
+    assert progress == [
+        ("User instruction added.", "ok", "Added: Use red."),
+        ("Run paused.", "warn", "The current step finishes; the next model call waits for Resume."),
+        ("User instruction added.", "ok", "Changed plan: Make it big."),
+        ("Run resumed.", "ok", None),
+    ]
+    replay = json.loads((manager.storage.run_dir(run_id) / "replay.json").read_text())
+    assert replay["run"]["paused"] is False
+
+    await client.post(f"/api/runs/{run_id}/stop")
+    for path, body in (("steer", {"message": "Late.", "mode": "add"}), ("pause", None), ("resume", None)):
+        response = await client.post(f"/api/runs/{run_id}/{path}", json=body)
+        assert (response.status_code, response.json()["code"]) == (409, "run_not_running")
+    assert (await client.post("/api/runs/unknown-run/pause")).status_code == 409
+
+
+@pytest.mark.parametrize("body", [{"message": "   ", "mode": "add"}, {"message": "x" * 4001, "mode": "add"},
+                                  {"message": "Hi", "mode": "replace"}, {"message": "Hi"},
+                                  {"message": "Hi", "mode": "add", "extra": 1}, ["Hi"]])
+async def test_steer_rejects_bad_bodies(api, body):
+    _, _, client = api
+    run_id = (await client.post("/api/runs", json={"scenarioId": "paint-draw-poster", "prompt": "Draw"})).json()["runId"]
+    response = await client.post(f"/api/runs/{run_id}/steer", json=body)
+    assert (response.status_code, response.json()["code"]) == (400, "invalid_request")
+
+
+async def test_attachments_are_copied_recorded_and_told_to_the_model(api, tmp_path):
+    _, manager, client = api
+    image = tmp_path / "my cover.PNG"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+    link = tmp_path / "link.png"
+    link.symlink_to(image)
+    folder = tmp_path / "songs"
+    folder.mkdir()
+    body = {"scenarioId": "paint-draw-poster", "prompt": "Draw",
+            "attachments": [{"kind": "image", "path": str(link)}, {"kind": "folder", "path": str(folder)}]}
+    run = (await client.post("/api/runs", json=body)).json()["detail"]["run"]
+    copied = manager.storage.run_dir(run["id"]) / "attachments" / "0-link.png"
+    assert run["attachments"] == [{"kind": "image", "path": str(copied), "name": "link.png"},
+                                  {"kind": "folder", "path": str(folder.resolve()), "name": "songs"}]
+    assert copied.read_bytes() == image.read_bytes()
+    image.unlink()
+    assert copied.exists(), "the run keeps its own copy"
+
+    from app.attachments import task_text
+    assert task_text(run).splitlines() == [
+        "Draw", "", "The user attached these:", f"- image link.png: {copied}",
+        f"- folder songs: {folder.resolve()} (read and write files there with Python)",
+        "To look at an attached image, run `import PIL.Image` and `display(PIL.Image.open(path))`; the next turn shows it to you.",
+    ]
+
+    second = tmp_path / "map.webp"
+    second.write_bytes(b"webp")
+    steer = {"message": "Use this map.", "mode": "add", "attachments": [{"kind": "image", "path": str(second)}]}
+    assert (await client.post(f"/api/runs/{run['id']}/steer", json=steer)).status_code == 202
+    queued = manager.contexts[run["id"]].steers[0]["attachments"]
+    assert queued == [{"kind": "image", "path": str(copied.with_name("2-map.webp")), "name": "map.webp"}]
+    detail = (await client.get(f"/api/runs/{run['id']}")).json()
+    assert detail["run"]["attachments"][-1] == queued[0]
+    assert detail["events"][-1]["detail"] == "Added: Use this map.\nAttached: map.webp"
+
+
+async def test_invalid_attachments_are_rejected_before_allocation(api, tmp_path):
+    _, manager, client = api
+    text = tmp_path / "notes.txt"
+    text.write_text("x")
+    huge = tmp_path / "huge.png"
+    with huge.open("wb") as handle:
+        handle.truncate(20 * 1024 * 1024 + 1)
+    cases = [
+        ({"kind": "image", "path": "relative.png"}, "full path"),
+        ({"kind": "image", "path": str(tmp_path / "missing.png")}, "not found"),
+        ({"kind": "image", "path": str(text)}, "PNG, JPEG, GIF, or WebP"),
+        ({"kind": "image", "path": str(tmp_path)}, "PNG, JPEG, GIF, or WebP"),
+        ({"kind": "image", "path": str(huge)}, "larger than 20 MB"),
+        ({"kind": "folder", "path": str(text)}, "not a folder"),
+    ]
+    for attachment, message in cases:
+        response = await client.post("/api/runs", json={"scenarioId": "paint-draw-poster", "prompt": "Draw", "attachments": [attachment]})
+        assert response.status_code == 400
+        assert (response.json()["code"], message in response.json()["error"]) == ("invalid_attachment", True)
+    too_many = [{"kind": "folder", "path": str(tmp_path)}] * 11
+    response = await client.post("/api/runs", json={"scenarioId": "paint-draw-poster", "prompt": "Draw", "attachments": too_many})
+    assert (response.status_code, response.json()["code"]) == (400, "invalid_request")
+    assert not manager.storage.root.exists()

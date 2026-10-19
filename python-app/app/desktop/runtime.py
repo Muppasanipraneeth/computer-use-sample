@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import signal as signals
 import sys
 from pathlib import Path
 from typing import Any
 
 from ..processes import OwnedProcess, assert_active, await_active, child_environment, drain_tail
+from ..screen import RunScreen
 
 
 class PythonRuntimeError(RuntimeError):
@@ -19,6 +22,10 @@ class PythonRuntimeError(RuntimeError):
             error = error.get("message", str(error))
         super().__init__(str(error))
         self.code = code
+
+
+class PythonDeadlineError(PythonRuntimeError):
+    """A step outlived execution_timeout_ms; the runtime tries to interrupt it before giving up on the session."""
 
 
 def read_output(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -52,6 +59,7 @@ class PythonRuntime:
         signal: asyncio.Event | None,
         execution_timeout_ms: int,
         release_timeout_ms: int,
+        interrupt_grace_ms: int,
     ) -> None:
         self.child = child
         self.platform = sys.platform
@@ -61,10 +69,13 @@ class PythonRuntime:
         self.signal = signal
         self.execution_timeout_ms = execution_timeout_ms
         self.release_timeout_ms = release_timeout_ms
+        self.interrupt_grace_ms = interrupt_grace_ms
         self._sequence = 0
         self._busy = False
         self._input_may_be_held = False
         self._closing: asyncio.Task[None] | None = None
+        # The run's handle on the runner's screen lock (set by the scenario runtime); input release holds it.
+        self.screen: RunScreen | None = None
         self._stderr = asyncio.create_task(drain_tail(child.stderr))
         self._watcher = asyncio.create_task(self._watch())
 
@@ -101,7 +112,7 @@ class PythonRuntime:
             try:
                 line = await asyncio.wait_for(await_active(read_line(), signal or self.signal), timeout_ms / 1000)
             except asyncio.TimeoutError as error:
-                raise PythonRuntimeError(f"Python execution exceeded {timeout_ms}ms. Start a new run.") from error
+                raise PythonDeadlineError(f"Python execution exceeded {timeout_ms}ms.") from error
             except (ValueError, asyncio.LimitOverrunError) as error:
                 raise PythonRuntimeError("Python output exceeds 12 MiB.") from error
             if len(line) > 12 * 1024 * 1024:
@@ -139,17 +150,60 @@ class PythonRuntime:
             self._input_may_be_held = True
             request = json.dumps({"id": self._sequence, "operation": "execute", "code": code}) + "\n"
             await await_active(self.child.write(request.encode()), signal or self.signal)
-            value = await self._receive(self._sequence, self.execution_timeout_ms, signal)
+            try:
+                value = await self._receive(self._sequence, self.execution_timeout_ms, signal)
+                output = read_output(value)
+            except PythonDeadlineError:
+                output = [self._deadline_note(), *read_output(await self._interrupt(signal))]
             assert_active(self.signal)
             assert_active(signal)
-            return {"output": read_output(value)}
+            return {"output": output}
         except BaseException:
             await self.close()
             raise
         finally:
             self._busy = False
 
+    def _deadline_note(self) -> dict[str, Any]:
+        seconds = f"{self.execution_timeout_ms / 1000:g}"
+        return {
+            "type": "input_text",
+            "text": (
+                f"This code was still running after {seconds} s, so it was stopped; the traceback below shows where. "
+                "Variables from earlier steps are kept. Break the work into smaller steps, use short network timeouts "
+                "(5-10 s), and fetch fewer pages per step."
+            ),
+        }
+
+    async def _interrupt(self, signal: asyncio.Event | None) -> dict[str, Any]:
+        """Stop a step that overran its deadline and keep the session: one slow step (e.g. seven 20 s page fetches)
+        used to end the whole run. The worker turns SIGINT into a KeyboardInterrupt inside the model's code and
+        replies with the traceback. Any failure here raises, and execute then closes the session as before."""
+        if os.name == "nt":
+            # No reliable way to interrupt one process's code on Windows without a shared console.
+            raise PythonRuntimeError(f"Python execution exceeded {self.execution_timeout_ms}ms. Start a new run.")
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(self.child.pid, signals.SIGINT)
+        try:
+            value = await self._receive(self._sequence, self.interrupt_grace_ms, signal)
+        except PythonDeadlineError as error:
+            raise PythonRuntimeError(
+                f"Python execution exceeded {self.execution_timeout_ms}ms and could not be stopped. Start a new run."
+            ) from error
+        # The stopped code may have been holding keys or mouse buttons down.
+        await self._release_inputs()
+        return value
+
     async def _release_inputs(self) -> None:
+        """Key-up and mouse-up for the whole machine. Another run's step may be holding a key or dragging, so the
+        release waits for the screen lock and lands between steps."""
+        if self.screen is None:
+            await self._send_release()
+            return
+        async with self.screen.hold_for_cleanup():
+            await self._send_release()
+
+    async def _send_release(self) -> None:
         try:
             helper = await OwnedProcess.spawn(
                 [self.python_path, "-I", "-u", self.release_helper_path],
@@ -210,11 +264,13 @@ async def launch_python_runtime(
     worker_path: str | Path | None = None,
     release_helper_path: str | Path | None = None,
     release_timeout_ms: int = 3000,
+    interrupt_grace_ms: int = 5000,
+    extra_environment: dict[str, str] | None = None,
 ) -> PythonRuntime:
     assert_active(signal)
     python_path = python_path or sys.executable
     directory = Path(__file__).parent
-    environment = child_environment()
+    environment = {**child_environment(), **(extra_environment or {})}
     try:
         child = await OwnedProcess.spawn(
             [python_path, "-u", str(worker_path or directory / "worker.py")], env=environment
@@ -229,6 +285,7 @@ async def launch_python_runtime(
         signal=signal,
         execution_timeout_ms=execution_timeout_ms,
         release_timeout_ms=release_timeout_ms,
+        interrupt_grace_ms=interrupt_grace_ms,
     )
     try:
         ready = await runtime._receive(None, 15_000)

@@ -4,11 +4,20 @@ Read the [README](../README.md#code-walkthrough), then follow the model loop, ex
 
 ## Model loop
 
-1. `POST /api/runs` validates settings, reserves the active-run slot, and prepares a fresh lab workspace.
+1. `POST /api/runs` validates settings, reserves one of `max_concurrent_runs` admissions (default 3, `JARVIS_MAX_CONCURRENT_RUNS`), and prepares a fresh lab workspace. Beyond the limit it returns 409 `run_limit_reached` ("Jarvis is already doing 3 tasks. Stop one or wait for it to finish.").
 2. [`run_responses_code_loop`](../app/responses_loop.py) sends the prompt and `exec_py` function tool to the Responses API through the Python SDK.
 3. It validates the response, sends each requested code block to the Python worker, and collects text/images.
 4. It sends those results as `function_call_output` with the matching `call_id`, using `previous_response_id` to continue the conversation. Commentary continues the loop. A final answer completes it when no tool calls remain; exhausting the turn budget fails the run.
-5. The scenario captures the final browser state. The runner publishes the terminal status after cleanup and persistence, then releases its active-run slot.
+5. The scenario captures the final browser state. The runner publishes the terminal status after cleanup and persistence, then releases the run's admission.
+
+## Concurrent runs
+
+Several runs work at once, each with its own worker, workspace, lab server and event stream. They share two things:
+
+- **The screen.** One lock in [`screen.py`](../app/screen.py) serialises everything that touches the real mouse, keyboard or display: model steps whose code may use them, desktop screenshots (routine captures, omp `look`, previews), raising a lab browser window, and input release after a deadline or at cleanup. `uses_screen` is conservative: a step runs without the lock only when it uses nothing but `read`, `web`, `apps`, `log`, `print`, `display`, safe standard modules, builtins, and names bound by earlier screen-free steps. Waiting for the lock is not part of the 60-second step deadline, honours Stop, and emits a `run_progress` "Waiting for the screen…" warning only when the step actually waited. A lab run whose window another run covered is brought back to the front before its next screen step.
+- **The local background browser.** Chromium allows one browser per profile, so [`local_browser_host.py`](../app/local_browser_host.py) runs one headless Chromium on Jarvis's browser profile for every web-using run without Cloudflare credentials. The first such run launches it, the last one closes it. Workers connect over CDP (`JARVIS_BROWSER_CDP`), open their own pages in the shared persistent context, and close only those pages; `Browser.close()` on a CDP connection only disconnects. If the Settings sign-in window holds the profile, the run continues and `read`/`web` report why they can't browse.
+
+The PyAutoGUI fail-safe corner stops every running run. A failed input release blocks new runs, stops other runs that have used the screen, and refuses further screen steps until the runner restarts.
 
 ## Execution worker
 
@@ -23,7 +32,8 @@ PyAutoGUI drives the real mouse and keyboard. Python Playwright starts the visib
 | Location | Responsibility |
 | --- | --- |
 | [`api.py`](../app/api.py) | FastAPI routes, capabilities, event streams, and artifact serving. |
-| [`runner.py`](../app/runner.py) | Active-run admission, lifecycle, cancellation, event publication, and persistence. |
+| [`runner.py`](../app/runner.py) | Admission up to the concurrent-run limit, lifecycle, cancellation, event publication, and persistence. |
+| [`screen.py`](../app/screen.py) and [`local_browser_host.py`](../app/local_browser_host.py) | The screen lock shared by concurrent runs, and their shared local background browser. |
 | [`browser.py`](../app/browser.py) and [`scenario_runtime.py`](../app/scenario_runtime.py) | Chromium, local lab server, execution worker, and final screenshots. |
 | [`lab_catalog.py`](../app/lab_catalog.py) | Read the shared catalog and add Python tool instructions. |
 | [`desktop`](../app/desktop/) | Persistent execution process and desktop-input cleanup. |
@@ -40,12 +50,21 @@ Both backends expose the same routes:
 
 - `GET /health` and `GET /api/capabilities`
 - `GET /api/scenarios` and `POST /api/scenarios/:id/reset`
-- `POST /api/runs` and `GET /api/runs/active`
+- `POST /api/runs` and `GET /api/runs/active` (the most recently started running run, or `null`)
 - `GET /api/runs/:id` and `POST /api/runs/:id/stop`
 - `GET /api/runs/:id/events` and `GET /api/runs/:id/replay`
 - `GET /api/runs/:id/artifacts/screenshots/:name`
 
-The capabilities response identifies Python, `exec_py`, visible browser mode, and defaults. The shared console is fixed to the backend selected by the root launch command. Its JSON requests carry `X-CUA-Backend`; a mismatch receives HTTP 409 before an action is executed.
+Python also exposes concurrent-run listing and run steering, used by the desktop app:
+
+- `GET /api/runs/running` returns the detail of every running run in start order (`[]` when idle). Reset stops every running run of that scenario and names the most recent one in `cancelledRunId`. The JavaScript backend runs one task at a time and answers a second Start with the same 409 `run_limit_reached`.
+
+- `POST /api/runs/:id/steer` with `{"message", "mode": "add" | "redirect", "attachments"?}` (202) queues a follow-up; the model receives it at the start of its next turn, never mid-step.
+- `POST /api/runs/:id/pause` and `POST /api/runs/:id/resume` hold the loop before its next model call; Stop still works while paused, and a follow-up does not resume.
+
+These return 409 `run_not_running` unless the run is active. `POST /api/runs` and `steer` accept up to 10 `attachments` (`{"kind": "image" | "folder", "path": <absolute path>}`). Images (PNG, JPEG, GIF, WebP, up to 20 MB) are copied to `data/runs/<run-id>/attachments/`; folders are used in place. The run record lists them under `attachments` and reports `paused`. The model is told each attachment's path, and the first attached image is shown to it on the next turn.
+
+The capabilities response identifies Python, `exec_py`, visible browser mode, and defaults. The shared console is fixed to the backend selected by the root launch command. Its JSON requests carry `X-Jarvis-Backend`; a mismatch receives HTTP 409 before an action is executed.
 
 The start response includes initial run detail. The console combines SSE events with bounded detail polling and can reconnect to an active run after a page refresh. It reconciles a lost Start response through active-run lookup without automatically resending Start.
 

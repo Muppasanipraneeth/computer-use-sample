@@ -1,5 +1,6 @@
 """Run-scoped lab setup, execution, screenshots, and awaited teardown."""
 import asyncio
+import os
 import re
 import sys
 from collections.abc import Awaitable, Callable
@@ -7,11 +8,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from .apps_gateway import AppsGateway
+from .browser_gateway import BrowserGateway
+from .config import composio_api_key, desktop_user_data
 from .errors import RunnerCoreError
-from .lab_catalog import instructions, list_scenarios
+from .lab_catalog import instructions, list_scenarios, target_app, uses_cloud_browser
 from .lab_server import start_workspace_lab_server
+from .local_browser_host import BrowserLease, LocalBrowserHost
 from .model_providers import ExternalCodeModel
 from .processes import assert_active
+from .screen import RunScreen
+from .user_profile import load_profile
 
 
 @dataclass
@@ -23,6 +30,23 @@ class RunExecutionContext:
     capture_screenshot: Callable[..., Awaitable]
     sync_browser_state: Callable[..., Awaitable]
     complete_run: Callable[..., Awaitable]
+    # Model loops await this before every model call: it blocks while the run is paused and returns the user's
+    # queued follow-ups ([{"mode": "add" | "redirect", "message": str, "attachments": [...]}]) for that turn.
+    next_turn: Callable[[], Awaitable[list[dict[str, Any]]]]
+    # This run's handle on the runner's one screen lock: screen steps, desktop captures and input release hold it.
+    screen: RunScreen
+    # The runner's shared headless Chromium for local background browsing.
+    browser_host: LocalBrowserHost
+
+
+def browser_profile_directory() -> str:
+    """Jarvis's browser profile, inside the desktop app's Electron userData folder: the Settings sign-in window
+    (desktop/browser-profile.mjs) stores the user's logins there and the local background browser reuses them.
+    JARVIS_BROWSER_PROFILE in the runner's environment overrides it."""
+    override = os.environ.get("JARVIS_BROWSER_PROFILE", "").strip()
+    if override:
+        return override
+    return str(desktop_user_data() / "browser-profile")
 
 
 async def delay(milliseconds: int, signal: asyncio.Event) -> None:
@@ -70,10 +94,14 @@ async def execute_scenario(context: RunExecutionContext) -> None:
     lab_server = None
     python = None
     session: Any = None
+    gateway: BrowserGateway | None = None
+    apps_gateway: AppsGateway | None = None
+    browser_lease: BrowserLease | None = None
 
     async def cleanup() -> None:
         errors = []
-        for resource in (python, session, lab_server, client):
+        # The worker disconnects from the shared browser before this run gives up its share of it.
+        for resource in (python, session, gateway, browser_lease, apps_gateway, lab_server, client):
             if resource is not None:
                 try:
                     await resource.close()
@@ -101,28 +129,76 @@ async def execute_scenario(context: RunExecutionContext) -> None:
         if run["browserMode"] == "headless":
             if run["labId"] == "desktop":
                 raise RunnerCoreError("CAD and game-engine control needs the visible desktop.", code="visible_desktop_required", status_code=400,
-                                      hint="Start the Python backend and leave Unreal Editor in front on the primary display.")
+                                      hint="Start the Python backend and leave the target app on the primary display.")
             raise RunnerCoreError("Local PyAutoGUI requires a visible browser.", code="visible_browser_required", status_code=400)
         if run["labId"] == "desktop":
-            desktop_message = "Using the omp account on the open Unreal Editor." if selection.provider == "omp" else "Using the desktop code loop for the open Unreal Editor."
+            app = target_app(run["scenarioId"])
+            target_label = f"the open {app}" if app else "the desktop"
+            desktop_message = f"Using the omp account on {target_label}." if selection.provider == "omp" else f"Using the desktop code loop for {target_label}."
             await context.emit_event({"type": "run_progress", "level": "ok", "detail": run["model"],
                                       "message": desktop_message})
-            python = await launch_python_runtime(signal=context.signal)
+            extra_environment: dict[str, str] = {}
+            web = uses_cloud_browser(run["scenarioId"])
+            if web:
+                # read() and web work in the background on any setup: Cloudflare's cloud browser when configured,
+                # otherwise the runner's shared headless Chromium. Either way the user's screen is left alone.
+                extra_environment["JARVIS_WEB_INSTRUMENTS"] = "1"
+                account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
+                api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
+                if account_id and api_token:
+                    gateway = await BrowserGateway.start(account_id, api_token)
+                    extra_environment["JARVIS_BROWSER_GATEWAY"] = gateway.base_url
+                    await context.emit_event({"type": "run_progress", "level": "ok", "detail": "gateway on 127.0.0.1",
+                                              "message": "Cloudflare Browser Run connected."})
+                else:
+                    try:
+                        browser_lease = await context.browser_host.lease(browser_profile_directory())
+                    except Exception as error:  # noqa: BLE001 - the run goes on; read() and web report why they can't browse
+                        extra_environment["JARVIS_BROWSER_UNAVAILABLE"] = str(error)
+                        await context.emit_event({"type": "run_progress", "level": "warn", "detail": str(error),
+                                                  "message": "The background browser on this computer is unavailable."})
+                    else:
+                        extra_environment["JARVIS_BROWSER_CDP"] = browser_lease.endpoint
+                        await context.emit_event({"type": "run_progress", "level": "ok",
+                                                  "detail": "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to use Cloudflare's cloud browser instead.",
+                                                  "message": "Web browsing runs in a background browser on this computer."})
+                composio_key = composio_api_key()
+                if composio_key:
+                    # Model code reaches connected apps only through this gateway; the key never enters the worker.
+                    apps_gateway = await AppsGateway.start(composio_key)
+                    extra_environment["JARVIS_APPS_GATEWAY"] = apps_gateway.base_url
+                    await context.emit_event({"type": "run_progress", "level": "ok", "detail": "gateway on 127.0.0.1",
+                                              "message": "Connected apps are available through Composio."})
+            python = await launch_python_runtime(signal=context.signal, extra_environment=extra_environment)
             assert_active(context.signal)
-            session = DesktopAppSession(python, context.screenshot_directory)
+            python.screen = context.screen
+            session = DesktopAppSession(python, context.screenshot_directory, target_label=app or "the desktop")
+            session.screen = context.screen
+            session.browser_gateway = gateway.base_url if gateway is not None else None
+            session.web_instruments = web
+            session.apps_gateway = apps_gateway.base_url if apps_gateway is not None else None
             await session.frontmost()
+            bound_to = f"the already-open {app}" if app else "the primary display"
             await context.emit_event({"type": "browser_session_started", "level": "ok", "detail": session.page.url,
-                                      "message": "Desktop session bound to the already-open Unreal Editor."})
+                                      "message": f"Desktop session bound to {bound_to}."})
             await context.sync_browser_state(session)
-            await context.capture_screenshot(session, "desktop-loaded")
+            # The omp loop shows the model the screen only when it asks, so it skips the routine before/after captures.
+            routine_captures = selection.provider != "omp"
+            if routine_captures:
+                await context.capture_screenshot(session, "desktop-loaded")
             desktop_label = selection.model_id if selection.provider != "openai" else None
             host = getattr(python, "platform", None) or sys.platform
+            # Only the general desktop task gets the profile: a run bound to one app (Unreal) has no use for it.
+            profile = load_profile() if app is None else None
             if desktop_label is None:
-                desktop_instructions = instructions(lab_id, session.page.url, platform=host)
+                desktop_instructions = instructions(run["scenarioId"], session.page.url, platform=host, web=web,
+                                                    cloud=gateway is not None, apps=apps_gateway is not None, profile=profile)
             else:
-                desktop_instructions = instructions(lab_id, session.page.url, desktop_label, platform=host)
+                desktop_instructions = instructions(run["scenarioId"], session.page.url, desktop_label, platform=host,
+                                                    web=web, cloud=gateway is not None, apps=apps_gateway is not None, profile=profile)
             result = await run_model(desktop_instructions)
-            await context.capture_screenshot(session, "desktop-final")
+            if routine_captures:
+                await context.capture_screenshot(session, "desktop-final")
             await context.complete_run(notes=result["notes"])
             return
         if selection.provider == "openai":
@@ -139,10 +215,14 @@ async def execute_scenario(context: RunExecutionContext) -> None:
         lab_url = lab_server.url_for("index.html")
         python = await launch_python_runtime(signal=context.signal)
         assert_active(context.signal)
+        python.screen = context.screen
         session = await launch_browser_session(browser_mode=run["browserMode"], screenshot_dir=context.screenshot_directory,
                                                 url=lab_url, target_label=f"run-scoped {lab_id} lab", signal=context.signal)
         session.execution = python
+        session.screen = context.screen
         await session.frontmost()
+        # Another run may have raised its own window since: bring the lab back before this run's next screen step.
+        context.screen.refocus = session.frontmost
         assert_active(context.signal)
         await context.emit_event({"type": "lab_started", "level": "ok", "detail": lab_url,
                                   "message": "HTTP lab server booted from the mutable workspace."})
@@ -153,7 +233,7 @@ async def execute_scenario(context: RunExecutionContext) -> None:
                                   "message": f"Browser navigated to the {lab_id} lab."})
         await context.capture_screenshot(session, f"{lab_id}-loaded")
         model_label = selection.model_id if selection.provider != "openai" else None
-        lab_instructions = instructions(lab_id, session.page.url) if model_label is None else instructions(lab_id, session.page.url, model_label)
+        lab_instructions = instructions(run["scenarioId"], session.page.url) if model_label is None else instructions(run["scenarioId"], session.page.url, model_label)
         result = await run_model(lab_instructions)
         await context.capture_screenshot(session, f"{lab_id}-final")
         await hold_browser(context)

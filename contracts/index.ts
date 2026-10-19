@@ -116,7 +116,7 @@ export const runRecordSchema = z.object({
   labId: labIdSchema,
   browserMode: browserModeSchema,
   model: z.string().min(1),
-  maxResponseTurns: responseTurnBudgetSchema,
+  maxResponseTurns: responseTurnBudgetSchema.nullable(),
   prompt: z.string().min(1),
   status: runStatusSchema,
   startedAt: z.string().datetime(),
@@ -163,7 +163,7 @@ export const startRunRequestSchema = z
   .object({
     scenarioId: z.string().min(1),
     browserMode: browserModeSchema.optional(),
-    maxResponseTurns: responseTurnBudgetSchema.optional(),
+    maxResponseTurns: responseTurnBudgetSchema.nullable().optional(),
     prompt: z.string().min(1),
     model: z.string().min(1).optional(),
   })

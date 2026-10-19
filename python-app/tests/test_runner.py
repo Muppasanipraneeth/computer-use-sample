@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.config import Settings
 from app.errors import RunnerCoreError
 from app.lab_catalog import list_scenarios
 from app.runner import RunnerManager
@@ -47,41 +48,48 @@ def request(**kwargs):
     return {"scenarioId": "kanban-reprioritize-sprint", "prompt": "Move the cards", **kwargs}
 
 
-async def test_single_admission_is_reserved_before_workspace_copy(manager_factory, monkeypatch):
-    manager = manager_factory(idle)
-    admitted, release = asyncio.Event(), asyncio.Event()
+async def test_admission_is_reserved_before_workspace_copy_and_capped(manager_factory, monkeypatch):
+    manager = manager_factory(idle, settings=Settings(max_concurrent_runs=2))
+    entered, release = [], asyncio.Event()
     prepare = manager.storage.prepare
     async def slow_prepare(*args):
-        admitted.set()
+        entered.append(args)
         await release.wait()
         await prepare(*args)
     monkeypatch.setattr(manager.storage, "prepare", slow_prepare)
-    start = asyncio.create_task(manager.start_run(request()))
-    await admitted.wait()
-    with pytest.raises(RunnerCoreError, match="already active"):
+    starts = []
+    for count in (1, 2):
+        starts.append(asyncio.create_task(manager.start_run(request())))
+        while len(entered) < count:
+            await asyncio.sleep(0.005)
+    with pytest.raises(RunnerCoreError) as caught:
         await manager.start_run(request())
+    assert (caught.value.code, caught.value.status_code) == ("run_limit_reached", 409)
+    assert str(caught.value) == "Jarvis is already doing 2 tasks. Stop one or wait for it to finish."
     lookup = asyncio.create_task(manager.get_active_run_detail())
     await asyncio.sleep(0)
     assert not lookup.done()
     release.set()
-    detail = await start
-    assert (await lookup)["run"]["id"] == detail["run"]["id"]
-    detail["events"].clear()
-    assert (await manager.get_run_detail(detail["run"]["id"]))["events"]
+    first, second = await asyncio.gather(*starts)
+    assert (await lookup)["run"]["id"] == second["run"]["id"]
+    assert [detail["run"]["id"] for detail in await manager.get_running_run_details()] == [first["run"]["id"], second["run"]["id"]]
+    first["events"].clear()
+    assert (await manager.get_run_detail(first["run"]["id"]))["events"]
 
 
-async def test_success_waits_for_executor_cleanup(manager_factory):
+async def test_success_holds_its_admission_until_executor_cleanup(manager_factory):
     completed, cleanup = asyncio.Event(), asyncio.Event()
     async def executor(context):
         await context.complete_run(notes=["done"])
         completed.set()
         await cleanup.wait()
-    manager = manager_factory(executor)
+    manager = manager_factory(executor, settings=Settings(max_concurrent_runs=1))
     detail = await manager.start_run(request())
     await completed.wait()
     assert (await manager.get_run_detail(detail["run"]["id"]))["run"]["status"] == "running"
-    with pytest.raises(RunnerCoreError):
+    with pytest.raises(RunnerCoreError) as caught:
         await manager.start_run(request())
+    assert str(caught.value) == "Jarvis is already doing 1 task. Stop one or wait for it to finish."
     cleanup.set()
     final = await wait_for_run_status(manager, detail["run"]["id"], "completed")
     replay = await manager.get_replay_bundle(detail["run"]["id"])
@@ -109,7 +117,7 @@ async def test_overlapping_stop_and_shutdown_wait_for_one_cleanup(manager_factor
     await cleaning.wait()
     shutdown = asyncio.create_task(manager.shutdown())
     assert (await manager.get_run_detail(detail["run"]["id"]))["run"]["status"] == "running"
-    assert manager.active_id
+    assert detail["run"]["id"] in manager.active
     release.set()
     final, _ = await asyncio.gather(stop, shutdown)
     assert final["run"]["status"] == "cancelled"
@@ -152,6 +160,92 @@ async def test_failsafe_cancellation_and_missing_completion(manager_factory):
     second = await manager.start_run(request())
     failed = await wait_for_run_status(manager, second["run"]["id"], "failed")
     assert "without completing" in failed["run"]["summary"]["notes"][0]
+
+
+async def test_concurrent_runs_both_make_progress(manager_factory):
+    arrived: list[str] = []
+    both = asyncio.Event()
+    async def executor(context):
+        arrived.append(context.detail["run"]["id"])
+        if len(arrived) == 2:
+            both.set()
+        await both.wait()  # each run needs the other to be running at the same time
+        await context.emit_event({"type": "run_progress", "level": "ok", "message": "working"})
+        await context.complete_run(notes=["done"])
+    manager = manager_factory(executor)
+    first = await manager.start_run(request())
+    second = await manager.start_run(request(scenarioId="paint-draw-poster"))
+    for detail in (first, second):
+        final = await wait_for_run_status(manager, detail["run"]["id"], "completed")
+        assert any(event["message"] == "working" for event in final["events"])
+    assert await manager.get_running_run_details() == []
+
+
+async def test_failsafe_corner_stops_every_running_run(manager_factory):
+    corner = asyncio.Event()
+    async def executor(context):
+        if context.detail["run"]["prompt"] == "corner":
+            await corner.wait()
+            raise RunnerCoreError("corner", code="python_failsafe")
+        await context.signal.wait()
+    manager = manager_factory(executor)
+    others = [await manager.start_run(request()), await manager.start_run(request(scenarioId="paint-draw-poster"))]
+    hit = await manager.start_run(request(prompt="corner"))
+    corner.set()
+    assert (await wait_for_run_status(manager, hit["run"]["id"], "cancelled"))["run"]["summary"]["notes"] == ["Desktop fail-safe activated."]
+    for detail in others:
+        final = await wait_for_run_status(manager, detail["run"]["id"], "cancelled")
+        assert final["run"]["summary"]["notes"] == ["Desktop fail-safe activated."]
+    assert not manager.active
+
+
+async def test_failed_input_release_stops_screen_users_and_locks_the_screen(manager_factory):
+    ready = asyncio.Event()
+    used = asyncio.Event()
+    async def executor(context):
+        prompt = context.detail["run"]["prompt"]
+        if prompt == "broken":
+            await ready.wait()
+            raise RunnerCoreError("Input release failed", code="desktop_cleanup_failed")
+        if prompt == "clicks":
+            async with context.screen.hold():
+                used.set()
+        await context.signal.wait()
+    manager = manager_factory(executor)
+    clicks = await manager.start_run(request(prompt="clicks"))
+    reads = await manager.start_run(request(prompt="reads"))
+    await used.wait()
+    broken = await manager.start_run(request(prompt="broken"))
+    ready.set()
+    await wait_for_run_status(manager, broken["run"]["id"], "failed")
+    await wait_for_run_status(manager, clicks["run"]["id"], "cancelled")
+    assert (await manager.get_run_detail(reads["run"]["id"]))["run"]["status"] == "running"
+    with pytest.raises(RunnerCoreError) as caught:
+        async with manager.contexts[reads["run"]["id"]].screen.hold():
+            pass
+    assert caught.value.code == "desktop_cleanup_failed"
+    with pytest.raises(RunnerCoreError):
+        await manager.start_run(request())
+
+
+async def test_shutdown_stops_every_run(manager_factory):
+    manager = manager_factory(idle)
+    runs = [await manager.start_run(request()) for _ in range(3)]
+    await manager.shutdown()
+    for detail in runs:
+        assert (await manager.get_run_detail(detail["run"]["id"]))["run"]["status"] == "cancelled"
+    assert not manager.active
+
+
+async def test_reset_stops_every_run_of_that_scenario_only(manager_factory):
+    manager = manager_factory(idle)
+    kanban = [await manager.start_run(request()) for _ in range(2)]
+    paint = await manager.start_run(request(scenarioId="paint-draw-poster"))
+    state = await manager.reset_scenario("kanban-reprioritize-sprint")
+    assert state["cancelledRunId"] == kanban[-1]["run"]["id"]
+    for detail in kanban:
+        assert (await manager.get_run_detail(detail["run"]["id"]))["run"]["status"] == "cancelled"
+    assert [detail["run"]["id"] for detail in await manager.get_running_run_details()] == [paint["run"]["id"]]
 
 
 async def test_cleanup_error_after_complete_never_publishes_success(manager_factory):
@@ -269,3 +363,61 @@ async def test_exact_model_image_metadata(manager_factory):
     image = final["browser"]["screenshots"][0]
     assert Path(image["path"]).read_bytes() == b"abc"
     assert (image["source"], image["imageWidth"], image["imageHeight"]) == ("code_tool", 100, 50)
+
+
+async def test_null_turn_budget_is_recorded_as_no_limit(manager_factory):
+    manager = manager_factory(idle)
+    detail = await manager.start_run(request(maxResponseTurns=None))
+    assert detail["run"]["maxResponseTurns"] is None
+    started = (await manager.get_run_detail(detail["run"]["id"]))["events"][0]
+    assert started["detail"].endswith("· no turn limit")
+    stopped = await manager.stop_run(detail["run"]["id"])
+    assert stopped["run"]["maxResponseTurns"] is None
+    assert (await manager.get_replay_bundle(detail["run"]["id"]))["run"]["maxResponseTurns"] is None
+
+
+def model_loop(turns: list, step: asyncio.Event, stop_after: int = 2):
+    """A stand-in model loop: each simulated step waits on `step`, then asks for the next turn like the real loops."""
+    async def executor(context):
+        while len(turns) < stop_after:
+            await step.wait()
+            step.clear()
+            turns.append(await context.next_turn())
+        await context.complete_run(notes=["done"])
+    return executor
+
+
+async def test_pause_holds_the_next_model_call_until_resume_and_delivers_queued_steers(manager_factory):
+    turns: list = []
+    step = asyncio.Event()
+    manager = manager_factory(model_loop(turns, step))
+    run_id = (await manager.start_run(request()))["run"]["id"]
+    assert await manager.pause_run(run_id) == {"ok": True, "paused": True}
+    await manager.steer_run(run_id, {"message": "Also label them.", "mode": "add"})
+    step.set()
+    await asyncio.sleep(0.05)
+    assert turns == [], "the model call waits while paused"
+    assert (await manager.get_run_detail(run_id))["run"]["paused"] is True
+    await manager.resume_run(run_id)
+    while not turns:
+        await asyncio.sleep(0.01)
+    assert turns == [[{"mode": "add", "message": "Also label them.", "attachments": []}]]
+    step.set()
+    detail = await wait_for_run_status(manager, run_id, "completed")
+    assert turns[1] == [], "steers are delivered once"
+    assert detail["run"]["paused"] is False
+
+
+async def test_stop_while_paused_cancels_the_run(manager_factory):
+    turns: list = []
+    step = asyncio.Event()
+    manager = manager_factory(model_loop(turns, step))
+    run_id = (await manager.start_run(request()))["run"]["id"]
+    await manager.pause_run(run_id)
+    step.set()
+    await asyncio.sleep(0.05)
+    stopped = await asyncio.wait_for(manager.stop_run(run_id), 5)
+    assert stopped["run"]["status"] == "cancelled"
+    assert stopped["run"]["paused"] is False
+    assert turns == []
+    assert await manager.get_active_run_detail() is None

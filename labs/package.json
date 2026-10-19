@@ -1,5 +1,5 @@
 {
-  "name": "cua-sample-labs",
+  "name": "jarvis-labs",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,7 @@
     "check": "pnpm lint && pnpm test"
   },
   "devDependencies": {
-    "@cua-sample/contracts": "workspace:*",
+    "@jarvis/contracts": "workspace:*",
     "playwright": "1.58.2"
   }
 }

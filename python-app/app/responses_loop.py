@@ -4,16 +4,39 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
+import re
 import struct
 import time
+from collections.abc import Iterable
+from itertools import count
 from typing import Any
 
+from .attachments import attachment_lines, inline_image, task_text
 from .desktop.input_rules import shortcut_instruction
+from .desktop.runtime import PythonRuntimeError
 from .errors import RunnerCoreError
+from .instruments import instrument_lines
 from .model_selection import parse_model_selection
 from .processes import assert_active, await_active
+
+
+def steer_text(steer: dict[str, Any]) -> str:
+    """How a user's follow-up reads to the model in every provider loop; the original task stays in context."""
+    if steer["mode"] == "redirect":
+        text = (f"The user changed the request: {steer['message']}\n"
+                "Follow this from now on; where it conflicts with the original task, this wins.")
+    else:
+        text = f"While you were working, the user added: {steer['message']}"
+    return "\n\n".join(part for part in (text, attachment_lines(steer.get("attachments", []))) if part)
+
+
+async def user_input(text: str, attachments: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """User content as input items; the first attached image rides along so the model sees it without asking."""
+    image = await asyncio.to_thread(inline_image, attachments)
+    return [{"type": "input_text", "text": text}, *([image] if image else [])]
 
 
 class OpenAIResponsesClient:
@@ -42,7 +65,28 @@ def create_default_responses_client() -> OpenAIResponsesClient:
     return OpenAIResponsesClient(key)
 
 
-def build_code_tool_definitions(platform: str, *, desktop_app: bool = False) -> list[dict[str, Any]]:
+def _target_lines(*, desktop_app: bool, target_label: str, web: bool, cloud: bool = False, apps: bool = False) -> list[str]:
+    if not desktop_app:
+        return [
+            "Start with display(pyautogui.screenshot()).",
+            "A visible Chromium window is already open to the lab.",
+            "Operate only the lab window.",
+        ]
+    if target_label == "Unreal Editor":
+        return [
+            "Unreal Editor is already open on the primary display. No practice web lab is open.",
+            "Operate only Unreal Editor. Do not click the operator console or other windows.",
+        ]
+    return [
+        "Use any app on this computer's primary display. Never click or type in the Jarvis window.",
+        *instrument_lines(web=web, cloud=cloud, apps=apps),
+    ]
+
+
+def build_code_tool_definitions(
+    platform: str, *, desktop_app: bool = False, target_label: str = "the desktop", web: bool = False, cloud: bool = False,
+    apps: bool = False,
+) -> list[dict[str, Any]]:
     return [
         {
             "type": "function",
@@ -60,21 +104,11 @@ def build_code_tool_definitions(platform: str, *, desktop_app: bool = False) -> 
                             [
                                 f"Python to execute on the local {platform} desktop. Python globals survive between calls.",
                                 "Available globals: pyautogui, log(value), and display(image), accepting a Pillow image.",
-                                "Start with display(pyautogui.screenshot()).",
-                                *(
-                                    [
-                                        "Unreal Editor is already open on the primary display. No practice web lab is open.",
-                                        "Operate only Unreal Editor. Do not click the operator console or other windows.",
-                                    ]
-                                    if desktop_app
-                                    else [
-                                        "A visible Chromium window is already open to the lab.",
-                                        "Operate only the lab window.",
-                                    ]
-                                ),
+                                *_target_lines(desktop_app=desktop_app, target_label=target_label, web=web, cloud=cloud, apps=apps),
                                 shortcut_instruction(platform),
                                 "Screenshots use the same coordinates as PyAutoGUI input on macOS Retina displays and on scaled Windows displays. All coordinates refer to the full desktop screenshot.",
-                                "No Playwright objects are available. Do not change the PyAutoGUI fail-safe setting.",
+                                *([] if web else ["No Playwright objects are available."]),
+                                "Do not change the PyAutoGUI fail-safe setting.",
                             ]
                         ),
                     }
@@ -82,6 +116,17 @@ def build_code_tool_definitions(platform: str, *, desktop_app: bool = False) -> 
             },
         }
     ]
+
+
+def session_code_tool_definitions(session: Any) -> list[dict[str, Any]]:
+    return build_code_tool_definitions(
+        session.execution.platform,
+        desktop_app=bool(getattr(session, "desktop_app", False)),
+        target_label=getattr(session, "target_label", "the desktop"),
+        web=bool(getattr(session, "web_instruments", False)),
+        cloud=bool(getattr(session, "browser_gateway", None)),
+        apps=bool(getattr(session, "apps_gateway", None)),
+    )
 
 
 def invalid_response(message: str) -> RunnerCoreError:
@@ -174,7 +219,21 @@ def classify_response(response: dict[str, Any]) -> dict[str, Any]:
     raise invalid_response("Responses API returned no tool calls or nonempty final assistant message.")
 
 
-async def execute_python_tool_call(context: Any, session: Any, call: dict[str, Any]) -> list[dict[str, Any]]:
+# Model code that used the background browser (read(...), web.goto, web.page...).
+BACKGROUND_WEB = re.compile(r"\b(?:read\s*\(|web\s*\.)")
+# Shows the page the background browser used last, without adding names to the model's Python globals.
+PREVIEW_CODE = "(lambda image: image and display(image))(web.preview())"
+
+
+async def execute_python_tool_call(
+    context: Any, session: Any, call: dict[str, Any], *, preview: bool = True
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Run model code; return its tool output and the saved paths of the images it displayed.
+
+    preview=False skips the routine after-code screenshot for loops where the model sees the screen only on request.
+    Code that used the background browser always gets a picture of its page for the app's Live view, which the model
+    never sees: background work otherwise leaves Live blank.
+    """
     if session.execution is None:
         raise RuntimeError("Python runtime is unavailable. Run uv sync and start a new run.")
     await await_active(
@@ -188,21 +247,30 @@ async def execute_python_tool_call(context: Any, session: Any, call: dict[str, A
         ),
         context.signal,
     )
-    result = await await_active(session.execution.execute(call["code"], context.signal), context.signal)
-    assert_active(context.signal)
-    for item in result["output"]:
-        if item["type"] != "input_image":
-            continue
-        encoded = item["image_url"][len("data:image/png;base64,") :]
-        image = base64.b64decode(encoded)
-        observation: dict[str, Any] = {"base64": encoded}
-        if len(image) >= 24 and image[:8] == b"\x89PNG\r\n\x1a\n":
-            observation["width"], observation["height"] = struct.unpack(">II", image[16:24])
-        await await_active(context.capture_screenshot(session, "Code tool image", observation), context.signal)
-    await await_active(context.sync_browser_state(session), context.signal)
-    await await_active(
-        context.capture_screenshot(session, f"responses-code-turn-{time.time_ns() // 1_000_000}"), context.signal
-    )
+    # Steps that may use the screen take turns with other runs; the wait isn't part of the step's deadline.
+    screen = getattr(session, "screen", None)
+    async with screen.step(call["code"]) if screen is not None else contextlib.nullcontext():
+        result = await await_active(session.execution.execute(call["code"], context.signal), context.signal)
+        assert_active(context.signal)
+        image_paths: list[str] = []
+        for item in result["output"]:
+            if item["type"] != "input_image":
+                continue
+            encoded = item["image_url"][len("data:image/png;base64,") :]
+            image = base64.b64decode(encoded)
+            observation: dict[str, Any] = {"base64": encoded}
+            if len(image) >= 24 and image[:8] == b"\x89PNG\r\n\x1a\n":
+                observation["width"], observation["height"] = struct.unpack(">II", image[16:24])
+            artifact = await await_active(context.capture_screenshot(session, "Code tool image", observation), context.signal)
+            image_paths.append(artifact["path"])
+        await await_active(context.sync_browser_state(session), context.signal)
+        if getattr(session, "web_instruments", False) and BACKGROUND_WEB.search(call["code"]):
+            await _capture_background_page(context, session)
+        if preview:
+            # Inside the same hold, so the picture shows this step's result rather than another run's.
+            await await_active(
+                context.capture_screenshot(session, f"responses-code-turn-{time.time_ns() // 1_000_000}"), context.signal
+            )
     await await_active(
         context.emit_event(
             {
@@ -214,22 +282,48 @@ async def execute_python_tool_call(context: Any, session: Any, call: dict[str, A
         ),
         context.signal,
     )
-    return result["output"] or [{"text": "exec_py completed with no output.", "type": "input_text"}]
+    return result["output"] or [{"text": "exec_py completed with no output.", "type": "input_text"}], image_paths
+
+
+async def _capture_background_page(context: Any, session: Any) -> None:
+    try:
+        result = await await_active(session.execution.execute(PREVIEW_CODE, context.signal), context.signal)
+    except PythonRuntimeError:
+        return  # Cosmetic: a failed preview must not fail the run.
+    for item in result["output"]:
+        if item["type"] == "input_image":
+            encoded = item["image_url"][len("data:image/png;base64,") :]
+            image = base64.b64decode(encoded)
+            observation: dict[str, Any] = {"base64": encoded}
+            if len(image) >= 24 and image[:8] == b"\x89PNG\r\n\x1a\n":
+                observation["width"], observation["height"] = struct.unpack(">II", image[16:24])
+            await await_active(context.capture_screenshot(session, "Background browser", observation), context.signal)
 
 
 async def run_responses_code_loop(
     context: Any,
     session: Any,
     instructions: str,
-    max_response_turns: int,
+    max_response_turns: int | None,
     client: Any,
 ) -> dict[str, Any]:
     """Each iteration requests a response and sends all matching tool results back."""
     previous_response_id: str | None = None
-    next_input: Any = context.detail["run"]["prompt"].strip()
+    task = task_text(context.detail["run"])
+    opening = await user_input(task, context.detail["run"].get("attachments", []))
+    # A plain string stays the opening input unless an attached image has to ride along.
+    next_input: Any = task if len(opening) == 1 else [{"role": "user", "content": opening}]
     final_assistant_message: str | None = None
-    for turn in range(1, max_response_turns + 1):
+    budget: Iterable[int] = count(1) if max_response_turns is None else range(1, max_response_turns + 1)
+    for turn in budget:
         assert_active(context.signal)
+        steers = await context.next_turn()
+        if steers:
+            # Responses input accepts user messages after tool outputs, so a follow-up joins this turn's input.
+            items = [{"role": "user", "content": next_input}] if isinstance(next_input, str) else list(next_input)
+            for steer in steers:
+                items.append({"role": "user", "content": await user_input(steer_text(steer), steer.get("attachments", []))})
+            next_input = items
         request: dict[str, Any] = {
             "instructions": instructions,
             "input": next_input,
@@ -237,9 +331,7 @@ async def run_responses_code_loop(
             "parallel_tool_calls": False,
             "reasoning": {"effort": "low"},
             "truncation": "auto",
-            "tools": build_code_tool_definitions(
-                session.execution.platform, desktop_app=bool(getattr(session, "desktop_app", False))
-            ),
+            "tools": session_code_tool_definitions(session),
         }
         if previous_response_id is not None:
             request["previous_response_id"] = previous_response_id
@@ -281,7 +373,7 @@ async def run_responses_code_loop(
         tool_outputs = []
         for call in classified["calls"]:
             assert_active(context.signal)
-            output = await execute_python_tool_call(context, session, call)
+            output, _images = await execute_python_tool_call(context, session, call)
             assert_active(context.signal)
             tool_outputs.append({"call_id": call["call_id"], "output": output, "type": "function_call_output"})
         next_input = tool_outputs

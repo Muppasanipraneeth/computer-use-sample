@@ -26,7 +26,7 @@ afterEach(async () => {
 });
 
 async function createLiveManager() {
-  const dataRoot = await mkdtemp(join(tmpdir(), "cua-sample-live-smoke-"));
+  const dataRoot = await mkdtemp(join(tmpdir(), "jarvis-live-smoke-"));
   tempRoots.push(dataRoot);
 
   const manager = new RunnerManager({

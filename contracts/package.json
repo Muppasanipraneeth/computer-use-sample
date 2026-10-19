@@ -1,5 +1,5 @@
 {
-  "name": "@cua-sample/contracts",
+  "name": "@jarvis/contracts",
   "version": "0.0.0",
   "private": true,
   "type": "module",

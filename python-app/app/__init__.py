@@ -1,1 +1,1 @@
-"""Native Python runner for the shared computer-use sample console."""
+"""Native Python runner for the shared Jarvis console."""

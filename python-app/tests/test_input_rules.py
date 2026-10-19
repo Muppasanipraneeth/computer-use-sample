@@ -13,8 +13,8 @@ def test_shortcuts_follow_the_machine():
 
 
 def test_desktop_instructions_name_the_host_shortcut():
-    mac = instructions("desktop", "desktop://primary", platform="darwin")
-    windows = instructions("desktop", "desktop://primary", platform="win32")
+    mac = instructions("desktop-cad-engine", "desktop://primary", platform="darwin")
+    windows = instructions("desktop-cad-engine", "desktop://primary", platform="win32")
     assert "This machine is macOS" in mac
     assert "This machine is Windows" in windows
     assert "command key" in mac
@@ -24,6 +24,17 @@ def test_desktop_instructions_name_the_host_shortcut():
     assert "command+space" in mac
     assert "ctrl+space" in windows
     assert "Camera Actor" in mac and "property" in windows
+    assert "Start with display" not in mac
+
+
+def test_any_app_scenario_has_no_unreal_card():
+    mac = instructions("any-task", "desktop://primary", platform="darwin")
+    windows = instructions("any-task", "desktop://primary", platform="win32")
+    assert "Unreal" not in mac and "Unreal" not in windows
+    assert "W move" not in mac
+    assert "subprocess.run(['open', '-a', name])" in mac
+    assert "Do not press command+space" not in mac
+    assert "Start with display" not in mac
 
 
 def test_dpi_awareness_is_a_no_op_off_windows():

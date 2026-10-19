@@ -66,6 +66,7 @@
       "id": "desktop-cad-engine",
       "labId": "desktop",
       "category": "productivity",
+      "targetApp": "Unreal Editor",
       "title": "Unreal property view",
       "description": "Operate Unreal Editor on an open real-estate level. Place a camera on the property. This run does not open a practice web lab.",
       "defaultPrompt": "Unreal Editor is already open on a real-estate level. Place one Camera Actor aimed at the property and leave that camera selected. Do not save, render, or package the project.",
@@ -80,6 +81,30 @@
         "The open level is a real-estate view. Bring Unreal Editor to the front, then use Place Actors and the viewport camera.",
         "Do not install the engine, change project settings, or click outside Unreal Editor.",
         "Reply briefly once the requested change is visible."
+      ]
+    },
+    {
+      "id": "any-task",
+      "labId": "desktop",
+      "category": "productivity",
+      "title": "Any task",
+      "description": "Answers questions and does tasks: reads the web in a background browser, drives your apps, and touches your screen only when it has to.",
+      "defaultPrompt": "Open Spotify, search for the song Runway, and play it.",
+      "tags": [
+        "hero",
+        "desktop",
+        "web"
+      ],
+      "cloudBrowser": true,
+      "templateDirectory": "desktop-app-template",
+      "instructions": [
+        "Use only the operator prompt as the source of truth.",
+        "Answer questions and do web tasks in the background with read() and web; never open a browser on the user's screen to look something up.",
+        "When a task needs an app on this computer, prefer subprocess or AppleScript through osascript, which don't move the mouse (e.g. subprocess.run(['open', '-a', name]), or tell application \"Spotify\" to play track). On Windows press the win key, type the app's name, and press enter.",
+        "Use the mouse and keyboard only for app interfaces nothing else can drive, and never click or type in the Jarvis window.",
+        "Look at the screen only to find something or to confirm a result code output cannot; use display(web.screenshot()) for the background browser.",
+        "Reply briefly once the task is done and say what you did and what happened.",
+        "In your final reply, cite every fact taken from a web page inline as a markdown link to that page, e.g. [TechCrunch](https://techcrunch.com/2026/10/18/example-story/); do not add a separate sources list, because the app shows sources itself."
       ]
     }
   ]

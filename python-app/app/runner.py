@@ -1,4 +1,5 @@
-"""Single-run lifecycle. A terminal status means teardown and persistence finished."""
+"""Run lifecycle for up to max_concurrent_runs runs at once. A terminal status means teardown and persistence finished.
+Runs share one screen lock (app/screen.py) and one local background browser (app/local_browser_host.py)."""
 import asyncio
 import base64
 import copy
@@ -10,8 +11,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from .attachments import copy_images, plan_attachments, resolve_attachments
 from .config import Settings
 from .errors import RunnerCoreError
+from .local_browser_host import LocalBrowserHost
 from .models import (
     BrowserScreenshotArtifact,
     BrowserState,
@@ -19,8 +22,11 @@ from .models import (
     RunEvent,
     RunRecord,
     StartRunRequest,
+    SteerRunRequest,
     validate_wire,
 )
+from .processes import await_active
+from .screen import RunScreen, ScreenLock
 from .storage import RunStorage, run_in_thread, validate_run_id
 
 logger = logging.getLogger(__name__)
@@ -28,6 +34,12 @@ logger = logging.getLogger(__name__)
 
 def timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _set_event() -> asyncio.Event:
+    event = asyncio.Event()
+    event.set()
+    return event
 
 
 @dataclass
@@ -40,6 +52,16 @@ class InternalRun:
     completion: dict | None = None
     subscribers: set[Callable[[dict], None]] = field(default_factory=set)
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Follow-up instructions wait here until the model loop's next turn drains them, so a step never sees them mid-way.
+    steers: list[dict[str, Any]] = field(default_factory=list)
+    # Set while the run may proceed; Pause clears it and the loop blocks before its next model call.
+    resumed: asyncio.Event = field(default_factory=_set_event)
+    # This run's handle on the shared screen lock, created when execution starts.
+    screen: RunScreen | None = None
+
+
+SCREEN_WAIT_EVENT = {"type": "run_progress", "level": "warn", "message": "Waiting for the screen…",
+                     "detail": "Another task is using the mouse and keyboard; this step starts when it finishes."}
 
 
 class RunnerManager:
@@ -51,10 +73,12 @@ class RunnerManager:
         self.executor = executor
         self.scenarios = scenarios if scenarios is not None else list_scenarios()
         self.contexts: dict[str, InternalRun] = {}
-        self.active_id: str | None = None
-        self.starting = False
-        self.start_done = asyncio.Event()
-        self.start_done.set()
+        # Admitted runs in start order, reserved before the first await of start_run. Each event is set once that
+        # run's start finished (registered or rolled back), so lookups and Stop never see a half-started run.
+        self.active: dict[str, asyncio.Event] = {}
+        self.screen_lock = ScreenLock()
+        self.browser_host = LocalBrowserHost()
+        self._stops: set[asyncio.Task] = set()
         self.shutting_down = False
         self.desktop_recovery_required = False
 
@@ -67,6 +91,8 @@ class RunnerManager:
 
     async def start_run(self, input: dict) -> dict:
         request = validate_wire(StartRunRequest, input)
+        # Validate attachments before admission so a bad path never allocates a run.
+        resolved = await run_in_thread(lambda: resolve_attachments(request.get("attachments", [])))
         if self.desktop_recovery_required:
             raise RunnerCoreError("Desktop input cleanup failed. New runs are blocked.", code="desktop_cleanup_failed",
                                   status_code=503, hint="Release held keys and mouse buttons, check desktop input permissions, then restart the runner before starting another run.")
@@ -77,42 +103,46 @@ class RunnerManager:
             raise RunnerCoreError("Local PyAutoGUI requires a visible browser.", code="visible_browser_required",
                                   status_code=400, hint="Use browserMode: headful for local PyAutoGUI execution.")
         scenario = self.scenario(request["scenarioId"])
-        if self.starting or self.active_id:
-            raise RunnerCoreError("A run is already active. Stop it before starting another run.", code="run_already_active",
-                                  status_code=409, hint="Stop the active run before starting another scenario.")
+        limit = self.settings.max_concurrent_runs
+        if len(self.active) >= limit:
+            raise RunnerCoreError(f"Jarvis is already doing {limit} task{'' if limit == 1 else 's'}. Stop one or wait for it to finish.",
+                                  code="run_limit_reached", status_code=409,
+                                  hint=f"Up to {limit} tasks run at once (JARVIS_MAX_CONCURRENT_RUNS).")
         run_id = str(uuid4())
+        planned = plan_attachments(resolved, self.storage.run_dir(run_id) / "attachments", 0)
         record = validate_wire(RunRecord, {
             "id": run_id, "scenarioId": scenario["id"], "labId": scenario["labId"], "browserMode": "headful",
             "maxResponseTurns": request.get("maxResponseTurns", 24), "model": request.get("model", self.settings.default_model),
-            "prompt": request["prompt"], "status": "running", "startedAt": timestamp(),
+            "prompt": request["prompt"], "status": "running", "startedAt": timestamp(), "paused": False,
+            "attachments": planned,
         })
         # Reserve admission before the first await, including workspace copying.
-        self.starting = True
-        self.start_done.clear()
+        started = asyncio.Event()
+        self.active[run_id] = started
         try:
             await self.storage.prepare(run_id, scenario["workspaceTemplatePath"])
+            await run_in_thread(lambda: copy_images(resolved, planned))
             detail = validate_wire(RunDetail, {
                 "run": record, "scenario": scenario, "workspacePath": str(self.storage.workspace(run_id)),
                 "events": [], "eventStreamUrl": f"/api/runs/{run_id}/events", "replayUrl": f"/api/runs/{run_id}/replay",
             })
             context = InternalRun(detail=detail)
             self.contexts[run_id] = context
-            self.active_id = run_id
             await self.storage.persist(detail)
+            turn_limit = "no turn limit" if record["maxResponseTurns"] is None else f"{record['maxResponseTurns']} turns"
             await self.emit_event(context, {"type": "run_started", "level": "ok", "message": f"Run {run_id} started.",
-                                            "detail": f"{scenario['title']} · headful · {record['maxResponseTurns']} turns"})
+                                            "detail": f"{scenario['title']} · headful · {turn_limit}"})
             await self.emit_event(context, {"type": "workspace_prepared", "level": "ok",
                                             "message": "Workspace copied into mutable run directory.",
                                             "detail": detail["workspacePath"]})
             context.execution = asyncio.create_task(self._execute(context), name=f"run:{run_id}")
             return copy.deepcopy(detail)
         except BaseException:
-            self.active_id = None
+            self.active.pop(run_id, None)
             self.contexts.pop(run_id, None)
             raise
         finally:
-            self.starting = False
-            self.start_done.set()
+            started.set()
 
     async def get_run_detail(self, run_id: str) -> dict:
         validate_run_id(run_id)
@@ -124,9 +154,18 @@ class RunnerManager:
                                         "eventStreamUrl": f"/api/runs/{run_id}/events", "replayUrl": f"/api/runs/{run_id}/replay",
                                         **({"browser": replay["browser"]} if "browser" in replay else {})})
 
+    async def _running_ids(self) -> list[str]:
+        """Running runs in start order, after any start in flight has registered."""
+        await asyncio.gather(*(started.wait() for started in list(self.active.values())))
+        return [run_id for run_id, started in self.active.items() if started.is_set() and run_id in self.contexts]
+
+    async def get_running_run_details(self) -> list[dict]:
+        return [await self.get_run_detail(run_id) for run_id in await self._running_ids()]
+
     async def get_active_run_detail(self) -> dict | None:
-        await self.start_done.wait()
-        return await self.get_run_detail(self.active_id) if self.active_id else None
+        """The most recently started running run, for clients that follow one run."""
+        running = await self._running_ids()
+        return await self.get_run_detail(running[-1]) if running else None
 
     async def get_replay_bundle(self, run_id: str) -> dict:
         return await self.storage.read_replay(run_id)
@@ -142,7 +181,9 @@ class RunnerManager:
 
     async def stop_run(self, run_id: str, reason: str = "Operator requested stop.") -> dict:
         validate_run_id(run_id)
-        await self.start_done.wait()
+        started = self.active.get(run_id)
+        if started is not None:
+            await started.wait()
         context = self.contexts.get(run_id)
         if context is None:
             persisted = await self.get_run_detail(run_id)
@@ -158,7 +199,7 @@ class RunnerManager:
                 await asyncio.shield(context.execution)
             return copy.deepcopy(context.detail)
         context.signal.set()
-        # Set stopping before cancelling so the executor cannot release the slot.
+        # Set stopping before cancelling so the executor cannot release the admission.
         context.stopping = asyncio.create_task(self._finish_stop(context, reason))
         if context.execution:
             context.execution.cancel()
@@ -177,26 +218,95 @@ class RunnerManager:
                                      {"detail": reason, "level": "warn", "message": "Run cancelled before completion.", "type": "run_cancelled"})
             return copy.deepcopy(context.detail)
         finally:
-            if self.active_id == context.detail["run"]["id"]:
-                self.active_id = None
+            self.active.pop(context.detail["run"]["id"], None)
+
+    def _running(self, run_id: str) -> InternalRun:
+        validate_run_id(run_id)
+        context = self.contexts.get(run_id)
+        if context is None or context.stopping or context.finalizing or context.detail["run"]["status"] != "running":
+            raise RunnerCoreError(f"Run {run_id} is not running.", code="run_not_running", status_code=409,
+                                  hint="Follow-ups, pause, and resume only apply to a running run. Start a new run instead.")
+        return context
+
+    async def steer_run(self, run_id: str, input: Any) -> dict:
+        request = validate_wire(SteerRunRequest, input)
+        context = self._running(run_id)
+        resolved = await run_in_thread(lambda: resolve_attachments(request.get("attachments", [])))
+        # Number copies after the run's existing attachments so file names never collide.
+        planned = plan_attachments(resolved, self.storage.run_dir(run_id) / "attachments", len(context.detail["run"]["attachments"]))
+        await run_in_thread(lambda: copy_images(resolved, planned))
+        context = self._running(run_id)
+        context.detail["run"]["attachments"].extend(planned)
+        context.steers.append({"mode": request["mode"], "message": request["message"], "attachments": planned})
+        prefix = "Added" if request["mode"] == "add" else "Changed plan"
+        attached = f"\nAttached: {', '.join(item['name'] for item in planned)}" if planned else ""
+        await self.emit_event(context, {"type": "run_progress", "level": "ok", "message": "User instruction added.",
+                                        "detail": f"{prefix}: {request['message']}{attached}"})
+        return {"ok": True}
+
+    async def pause_run(self, run_id: str) -> dict:
+        context = self._running(run_id)
+        if context.resumed.is_set():
+            context.resumed.clear()
+            context.detail["run"]["paused"] = True
+            await self.emit_event(context, {"type": "run_progress", "level": "warn", "message": "Run paused.",
+                                            "detail": "The current step finishes; the next model call waits for Resume."})
+        return {"ok": True, "paused": True}
+
+    async def resume_run(self, run_id: str) -> dict:
+        context = self._running(run_id)
+        if not context.resumed.is_set():
+            context.detail["run"]["paused"] = False
+            context.resumed.set()
+            await self.emit_event(context, {"type": "run_progress", "level": "ok", "message": "Run resumed."})
+        return {"ok": True, "paused": False}
+
+    async def _next_turn(self, context: InternalRun) -> list[dict[str, Any]]:
+        """Called by model loops before each model call: hold while paused (Stop still wins), then hand over queued steers."""
+        if not context.resumed.is_set():
+            await await_active(context.resumed.wait(), context.signal)
+        steers, context.steers = context.steers, []
+        return steers
+
+    def _stop_others(self, internal: InternalRun, reason: str, *, screen_users_only: bool = False) -> None:
+        """Stop every other admitted run (a start in flight is stopped once it registers) without waiting here."""
+        for run_id in list(self.active):
+            other = self.contexts.get(run_id)
+            if other is internal:
+                continue
+            if screen_users_only and (other is None or other.screen is None or not other.screen.used):
+                continue
+            task = asyncio.create_task(self.stop_run(run_id, reason))
+            self._stops.add(task)
+            task.add_done_callback(self._stopped)
+
+    def _stopped(self, task: asyncio.Task) -> None:
+        self._stops.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("Stopping a run failed", exc_info=task.exception())
 
     async def shutdown(self) -> None:
         self.shutting_down = True
-        await self.start_done.wait()
-        if self.active_id:
-            await self.stop_run(self.active_id, "Runner shutting down.")
+        await self._running_ids()
+        await asyncio.gather(*(self.stop_run(run_id, "Runner shutting down.") for run_id in list(self.active)))
+        await asyncio.gather(*list(self._stops), return_exceptions=True)
+        await self.browser_host.close()
 
     async def reset_scenario(self, scenario_id: str) -> dict:
         self.scenario(scenario_id)
-        await self.start_done.wait()
+        running = await self._running_ids()
         state = {"scenarioId": scenario_id, "resetAt": timestamp()}
-        if self.active_id and self.contexts[self.active_id].detail["run"]["scenarioId"] == scenario_id:
-            stopped = await self.stop_run(self.active_id, "Scenario reset requested.")
-            state["cancelledRunId"] = stopped["run"]["id"]
+        targets = [run_id for run_id in running if self.contexts[run_id].detail["run"]["scenarioId"] == scenario_id]
+        stopped = await asyncio.gather(*(self.stop_run(run_id, "Scenario reset requested.") for run_id in targets))
+        if stopped:
+            # The contract names one run: the most recently started, matching /api/runs/active.
+            state["cancelledRunId"] = stopped[-1]["run"]["id"]
         return state
 
     async def _execute(self, internal: InternalRun) -> None:
         from .scenario_runtime import RunExecutionContext, execute_scenario
+        internal.screen = RunScreen(self.screen_lock, internal.signal,
+                                    on_wait=lambda: self.emit_event(internal, dict(SCREEN_WAIT_EVENT)))
         context = RunExecutionContext(
             detail=internal.detail, signal=internal.signal,
             screenshot_directory=self.storage.run_dir(internal.detail["run"]["id"]) / "screenshots",
@@ -204,6 +314,8 @@ class RunnerManager:
             capture_screenshot=lambda session, label, observation=None: self.capture_screenshot(internal, session, label, observation),
             sync_browser_state=lambda session: self.sync_browser_state(internal, session),
             complete_run=lambda **kwargs: self._complete(internal, **kwargs),
+            next_turn=lambda: self._next_turn(internal),
+            screen=internal.screen, browser_host=self.browser_host,
         )
         try:
             await (self.executor or execute_scenario)(context)
@@ -219,7 +331,13 @@ class RunnerManager:
             code = getattr(error, "code", "")
             cleanup_failed = code in ("desktop_cleanup_failed", "cleanup_failed")
             if code == "desktop_cleanup_failed":
+                # Held keys or buttons may remain: no run may use the screen until the runner restarts.
                 self.desktop_recovery_required = True
+                self.screen_lock.disable("Desktop input cleanup failed in another task, so the screen can't be used.")
+                self._stop_others(internal, "Desktop input cleanup failed in another task.", screen_users_only=True)
+            if code == "python_failsafe":
+                # The fail-safe corner means stop everything, not just the run whose step hit it.
+                self._stop_others(internal, "Desktop fail-safe activated.")
             if internal.signal.is_set() and not cleanup_failed:
                 return
             internal.finalizing = True
@@ -236,8 +354,8 @@ class RunnerManager:
                 await self._terminal(internal, "failed", {"notes": notes},
                                      {"detail": " ".join(notes), "level": "error", "message": "Run failed during execution.", "type": "run_failed"})
         finally:
-            if not internal.stopping and self.active_id == internal.detail["run"]["id"]:
-                self.active_id = None
+            if not internal.stopping:
+                self.active.pop(internal.detail["run"]["id"], None)
 
     async def _complete(self, context: InternalRun, *, notes: list[str]) -> None:
         if not context.signal.is_set() and context.detail["run"]["status"] == "running":
@@ -278,7 +396,7 @@ class RunnerManager:
         end = timestamp()
         start = datetime.fromisoformat(context.detail["run"]["startedAt"].replace("Z", "+00:00"))
         duration = max(0, int((datetime.fromisoformat(end.replace("Z", "+00:00")) - start).total_seconds() * 1000))
-        record = {**context.detail["run"], "status": status, "completedAt": end, "durationMs": duration,
+        record = {**context.detail["run"], "status": status, "completedAt": end, "durationMs": duration, "paused": False,
                   "summary": {**completion, "screenshotCount": 0, "stepCount": 0}}
         try:
             await self.emit_event(context, event, record)

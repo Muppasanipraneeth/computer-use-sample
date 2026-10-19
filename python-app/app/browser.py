@@ -7,13 +7,17 @@ import contextlib
 import re
 import shutil
 import tempfile
+from collections.abc import Awaitable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
+from .errors import RunnerCoreError
 from .processes import OwnedProcess, assert_active, await_active, bounded, child_environment, drain_tail
+from .screen import RunScreen
 
 DEFAULT_VIEWPORT = {"width": 1440, "height": 900}
+_T = TypeVar("_T")
 
 
 class BrowserCleanupError(RuntimeError):
@@ -72,6 +76,8 @@ class BrowserSession:
         self._screenshot_count = 0
         self._closing: asyncio.Task[None] | None = None
         self._stdout = asyncio.create_task(drain_tail(process.stdout))
+        # The run's handle on the runner's screen lock: raising the window changes what other runs' clicks hit.
+        self.screen: RunScreen | None = None
         self._stderr = asyncio.create_task(drain_tail(process.stderr))
         self._watcher = asyncio.create_task(self._watch_signal()) if signal is not None else None
 
@@ -86,14 +92,29 @@ class BrowserSession:
         with contextlib.suppress(Exception):
             await self.close()
 
+    async def _on_page(self, operation: Awaitable[_T]) -> _T:
+        try:
+            return await await_active(operation, self.signal)
+        except Exception as error:
+            # Playwright's TargetClosedError text. The model's own clicks (Dock, ⌘Q) can close the lab window.
+            if "Target page, context or browser has been closed" in str(error):
+                raise RunnerCoreError(
+                    "The practice lab's browser window was closed, so the run stopped.",
+                    code="lab_browser_closed",
+                    status_code=409,
+                    hint="Leave the lab window open while the agent works. For tasks outside the lab, use the Any task workspace.",
+                ) from error
+            raise
+
     async def navigate(self, url: str) -> None:
-        await await_active(self.page.goto(url, wait_until="load"), self.signal)
+        await self._on_page(self.page.goto(url, wait_until="load"))
 
     async def frontmost(self) -> None:
-        await await_active(self.page.bring_to_front(), self.signal)
+        async with self.screen.hold() if self.screen is not None else contextlib.nullcontext():
+            await self._on_page(self.page.bring_to_front())
 
     async def read_state(self) -> dict[str, Any]:
-        title = await await_active(self.page.title(), self.signal)
+        title = await self._on_page(self.page.title())
         return {"currentUrl": self.page.url, **({"pageTitle": title} if title else {})}
 
     async def capture_screenshot(self, label: str) -> dict[str, Any]:
@@ -101,7 +122,7 @@ class BrowserSession:
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
         name = re.sub(r"[^a-z0-9]+", "-", label.strip().lower()).strip("-")[:64] or "capture"
         path = self.screenshot_dir / f"{self._screenshot_count:03d}-{name}.png"
-        await await_active(self.page.screenshot(path=str(path)), self.signal)
+        await self._on_page(self.page.screenshot(path=str(path)))
         return {
             "capturedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             **await self.read_state(),
@@ -171,12 +192,20 @@ async def launch_browser_session(
     if browser_mode != "headful":
         raise ValueError("Local PyAutoGUI requires a visible browser.")
     assert_active(signal)
-    profile = Path(tempfile.mkdtemp(prefix="cua-python-chromium-"))
+    profile = Path(tempfile.mkdtemp(prefix="jarvis-python-chromium-"))
     playwright: Any = None
     session: BrowserSession | None = None
     try:
         playwright = await asyncio.wait_for(async_playwright().start(), 15)
         assert_active(signal)
+        # We spawn the binary ourselves, so a missing download would otherwise surface as a bare FileNotFoundError.
+        if not Path(playwright.chromium.executable_path).exists():
+            raise RunnerCoreError(
+                "Chromium for the practice labs is not installed.",
+                code="browser_not_installed",
+                status_code=400,
+                hint="Run `pnpm python:playwright:install` from the repository root, then start the run again.",
+            )
         child = await OwnedProcess.spawn(
             [
                 playwright.chromium.executable_path,

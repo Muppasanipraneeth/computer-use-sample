@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunnerManager } from "../../../javascript-app/src/runner-manager.js";
-import { type RunEvent } from "@cua-sample/contracts";
+import { type RunEvent } from "@jarvis/contracts";
 const tempRoots: string[] = [];
 afterEach(async () => { for (const root of tempRoots.splice(0)) await rm(root, { force: true, recursive: true }); });
 async function createManager() {

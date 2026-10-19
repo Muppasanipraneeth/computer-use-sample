@@ -15,7 +15,7 @@ Ordinary checks:
 
 ```bash
 pnpm check:python
-pnpm --filter @cua-sample/console test
+pnpm --filter @jarvis/console test
 pnpm check:labs
 ```
 
@@ -25,7 +25,7 @@ Install Python's Chromium and opt into headless browser tests of all three labs:
 
 ```bash
 pnpm python:playwright:install
-CUA_BROWSER_TESTS=1 uv run --project python-app pytest python-app/tests/test_browser_labs.py
+JARVIS_BROWSER_TESTS=1 uv run --project python-app pytest python-app/tests/test_browser_labs.py
 ```
 
 These tests use headless Chromium to inspect lab state and do not use PyAutoGUI input. [CI](../../.github/workflows/samples.yml) enables this check after installing the Python Playwright browser. Run `pnpm check` to check both backends, the shared console, and shared labs.
@@ -46,7 +46,7 @@ Use **Ctrl+C** and wait for shutdown before starting JavaScript. Exercise **Stop
 After completing desktop permissions, setting an API key in `.env`, and installing Chromium, explicitly run:
 
 ```bash
-CUA_LIVE_TESTS=1 uv run --project python-app pytest python-app/tests/test_live_labs.py -m live
+JARVIS_LIVE_TESTS=1 uv run --project python-app pytest python-app/tests/test_live_labs.py -m live
 ```
 
 The live suite operates the real desktop and calls the Responses API for the three shared labs. Use a dedicated session, keep the lab window in front, and avoid other mouse/keyboard activity. Live tests are skipped without explicit opt-in and excluded from ordinary CI.
@@ -57,5 +57,5 @@ For a manual check, launch `pnpm dev:python` and run each of the three [lab task
 
 - Model/tool interaction lives in [`responses_loop.py`](../app/responses_loop.py); desktop execution and cleanup live under [`desktop`](../app/desktop/).
 - HTTP and persistence behavior follow the [architecture map](architecture.md#supporting-modules). Preserve the shared route shapes, admission semantics, and terminal-after-cleanup lifecycle.
-- Wire changes belong in [`contracts`](../../contracts/), with matching Python models and fixtures. Run `pnpm --filter @cua-sample/contracts test` and `pnpm check:python` to validate both implementations against the shared fixtures.
+- Wire changes belong in [`contracts`](../../contracts/), with matching Python models and fixtures. Run `pnpm --filter @jarvis/contracts test` and `pnpm check:python` to validate both implementations against the shared fixtures.
 - Shared UI changes belong in [`console`](../../console/). Lab prompts, templates, task examples, and automated lab checks follow the [lab contribution guide](../../labs/docs/contributing.md).

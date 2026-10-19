@@ -7,12 +7,15 @@ import json
 import os
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
+from itertools import count
 from typing import Any
 
+from .attachments import task_text
 from .errors import RunnerCoreError
 from .model_selection import ModelSelection
 from .processes import assert_active, await_active
-from .responses_loop import build_code_tool_definitions, execute_python_tool_call
+from .responses_loop import execute_python_tool_call, session_code_tool_definitions, steer_text, user_input
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
@@ -38,18 +41,18 @@ class ExternalCodeModel:
                 status_code=400,
                 hint="Use an unprefixed OpenAI model, anthropic:<model>, or compatible:<model>.",
             )
-        base_url = os.environ.get("CUA_COMPATIBLE_BASE_URL", "").strip().rstrip("/")
-        key = os.environ.get("CUA_COMPATIBLE_API_KEY", "").strip()
+        base_url = os.environ.get("JARVIS_COMPATIBLE_BASE_URL", "").strip().rstrip("/")
+        key = os.environ.get("JARVIS_COMPATIBLE_API_KEY", "").strip()
         if not base_url or not key:
             raise RunnerCoreError(
-                "CUA_COMPATIBLE_BASE_URL and CUA_COMPATIBLE_API_KEY are required for this provider.",
+                "JARVIS_COMPATIBLE_BASE_URL and JARVIS_COMPATIBLE_API_KEY are required for this provider.",
                 code="missing_api_key",
                 status_code=400,
                 hint="Set both variables in the root .env. The base URL should end in /v1 for OpenAI-compatible servers.",
             )
         if not base_url.startswith(("https://", "http://")):
             raise RunnerCoreError(
-                "CUA_COMPATIBLE_BASE_URL must start with http:// or https://.",
+                "JARVIS_COMPATIBLE_BASE_URL must start with http:// or https://.",
                 code="invalid_configuration",
                 status_code=400,
             )
@@ -63,13 +66,11 @@ class ExternalCodeModel:
         self,
         *,
         instructions: str,
-        prompt: str,
+        prompt: list[dict[str, Any]],
         turns: list[dict[str, Any]],
-        platform: str,
+        tool: dict[str, Any],
         signal: asyncio.Event | None,
-        desktop_app: bool = False,
     ) -> dict[str, Any]:
-        tool = build_code_tool_definitions(platform, desktop_app=desktop_app)[0]
         if self.selection.provider == "anthropic":
             body = build_anthropic_body(self.selection.model_id, instructions, prompt, turns, tool)
             payload = await post_json(
@@ -122,14 +123,27 @@ def _image_blocks(output: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return blocks
 
 
+def _anthropic_user_blocks(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """User-authored input items (task, follow-ups, attached images) as Claude content blocks."""
+    texts = [{"type": "text", "text": item["text"]} for item in items if item.get("type") == "input_text"]
+    return [*texts, *_image_blocks(items)]
+
+
+def _compatible_user_content(items: list[dict[str, Any]]) -> str | list[dict[str, Any]]:
+    """Plain text unless an image is attached, so text-only servers keep receiving the shape they always did."""
+    text = "\n\n".join(item["text"] for item in items if item.get("type") == "input_text")
+    images = [{"type": "image_url", "image_url": {"url": item["image_url"]}} for item in items if item.get("type") == "input_image"]
+    return [{"type": "text", "text": text}, *images] if images else text
+
+
 def build_anthropic_body(
     model_id: str,
     instructions: str,
-    prompt: str,
+    prompt: list[dict[str, Any]],
     turns: list[dict[str, Any]],
     tool: dict[str, Any],
 ) -> dict[str, Any]:
-    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    messages: list[dict[str, Any]] = [{"role": "user", "content": _anthropic_user_blocks(prompt)}]
     for turn in turns:
         content: list[dict[str, Any]] = []
         if turn.get("commentary"):
@@ -144,7 +158,8 @@ def build_anthropic_body(
                 "tool_use_id": result["call_id"],
                 "content": [*_text_blocks(result["output"]), *_image_blocks(result["output"])],
             })
-        messages.append({"role": "user", "content": results})
+        # Follow-ups the user sent after this turn ride in the same user message, after the tool results Claude requires first.
+        messages.append({"role": "user", "content": [*results, *_anthropic_user_blocks(turn.get("user", []))]})
     return {
         "max_tokens": 8192,
         "model": model_id,
@@ -157,13 +172,13 @@ def build_anthropic_body(
 def build_compatible_body(
     model_id: str,
     instructions: str,
-    prompt: str,
+    prompt: list[dict[str, Any]],
     turns: list[dict[str, Any]],
     tool: dict[str, Any],
 ) -> dict[str, Any]:
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": instructions},
-        {"role": "user", "content": prompt},
+        {"role": "user", "content": _compatible_user_content(prompt)},
     ]
     for turn in turns:
         messages.append({
@@ -190,6 +205,8 @@ def build_compatible_body(
                         *[{"type": "image_url", "image_url": {"url": url}} for url in images],
                     ],
                 })
+        if turn.get("user"):
+            messages.append({"role": "user", "content": _compatible_user_content(turn["user"])})
     return {
         "max_tokens": 8192,
         "model": model_id,
@@ -346,20 +363,26 @@ async def run_external_code_loop(
     context: Any,
     session: Any,
     instructions: str,
-    max_response_turns: int,
+    max_response_turns: int | None,
     client: ExternalCodeModel,
 ) -> dict[str, Any]:
-    prompt = context.detail["run"]["prompt"].strip()
+    run = context.detail["run"]
+    prompt = await user_input(task_text(run), run.get("attachments", []))
     turns: list[dict[str, Any]] = []
     final_assistant_message: str | None = None
-    for turn in range(1, max_response_turns + 1):
+    budget: Iterable[int] = count(1) if max_response_turns is None else range(1, max_response_turns + 1)
+    for turn in budget:
         assert_active(context.signal)
+        steers: list[dict[str, Any]] = []
+        for steer in await context.next_turn():
+            steers.extend(await user_input(steer_text(steer), steer.get("attachments", [])))
+        # Before the first reply nothing is replayed yet, so a follow-up joins the opening user message.
+        (turns[-1].setdefault("user", []) if turns else prompt).extend(steers)
         classified = await client.complete(
             instructions=instructions,
             prompt=prompt,
             turns=turns,
-            platform=session.execution.platform,
-            desktop_app=bool(getattr(session, "desktop_app", False)),
+            tool=session_code_tool_definitions(session)[0],
             signal=context.signal,
         )
         await await_active(
@@ -390,7 +413,7 @@ async def run_external_code_loop(
             if not call["code"].strip():
                 output = [{"text": "No code was provided to exec_py.", "type": "input_text"}]
             else:
-                output = await execute_python_tool_call(
+                output, _images = await execute_python_tool_call(
                     context,
                     session,
                     {"arguments": json.dumps({"code": call["code"]}), "code": call["code"], "call_id": call["id"]},

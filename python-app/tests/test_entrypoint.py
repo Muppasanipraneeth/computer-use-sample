@@ -45,7 +45,7 @@ entry.main()
 
 @pytest.mark.parametrize("message", [None, b"stop"])
 async def test_managed_parent_pipe_waits_for_active_run_cleanup(tmp_path, message):
-    environment = {**os.environ, "CUA_MANAGED_LAUNCH": "1", "HOST": "127.0.0.1", "PORT": "0",
+    environment = {**os.environ, "JARVIS_MANAGED_LAUNCH": "1", "HOST": "127.0.0.1", "PORT": "0",
                    "OPENAI_API_KEY": ""}
     process = await asyncio.create_subprocess_exec(sys.executable, "-c", CHILD, str(tmp_path),
                                                    env=environment, stdin=asyncio.subprocess.PIPE,
@@ -92,7 +92,7 @@ async def test_managed_startup_failure_exits_with_parent_pipe_still_open(tmp_pat
     with socket.socket() as occupied:
         occupied.bind(("127.0.0.1", 0))
         occupied.listen()
-        environment = {**os.environ, "CUA_MANAGED_LAUNCH": "1", "HOST": "127.0.0.1",
+        environment = {**os.environ, "JARVIS_MANAGED_LAUNCH": "1", "HOST": "127.0.0.1",
                        "PORT": str(occupied.getsockname()[1]), "OPENAI_API_KEY": ""}
         process = await asyncio.create_subprocess_exec(sys.executable, "-c", CHILD, str(tmp_path),
                                                        env=environment, stdin=asyncio.subprocess.PIPE,

@@ -41,15 +41,15 @@ class OriginGuard:
                 response_headers.append((b"vary", b"Origin"))
                 if origin in self.allowed_origins:
                     response_headers.extend([(b"access-control-allow-origin", origin.encode()),
-                                             (b"access-control-allow-headers", b"Content-Type,X-CUA-Backend,Last-Event-ID"),
+                                             (b"access-control-allow-headers", b"Content-Type,X-Jarvis-Backend,Last-Event-ID"),
                                              (b"access-control-allow-methods", b"GET,POST,OPTIONS")])
                 message = {**message, "headers": response_headers}
             await send(message)
         if origin and origin not in self.allowed_origins:
             await JSONResponse({"code": "origin_not_allowed", "error": "This origin is not allowed to access the runner.",
-                                "hint": "Use the local operator console or configure CUA_ALLOWED_ORIGINS."}, status_code=403)(scope, receive, with_cors)
+                                "hint": "Use the local operator console or configure JARVIS_ALLOWED_ORIGINS."}, status_code=403)(scope, receive, with_cors)
             return
-        expected = headers.get("x-cua-backend")
+        expected = headers.get("x-jarvis-backend")
         if expected is not None and expected != "python":
             await JSONResponse({"code": "backend_mismatch", "error": "The selected backend does not match the running backend.",
                                 "hint": "Restart the console for the selected backend."}, status_code=409)(scope, receive, with_cors)
@@ -84,11 +84,11 @@ def create_app(*, manager: RunnerManager | None = None, settings: Settings | Non
     app.state.manager = manager
     app.state.shutdown = shutdown
     app.state.lease = lease
-    app.state.instance_id = os.environ.get("CUA_INSTANCE_ID") or str(uuid4())
+    app.state.instance_id = os.environ.get("JARVIS_INSTANCE_ID") or str(uuid4())
     app.state.start_requests = set()
     defaults = {f"{protocol}://{host}:3000" for protocol in ("http", "https")
                 for host in ("localhost", "127.0.0.1", "[::1]")}
-    configured = allowed_origins if allowed_origins is not None else os.environ.get("CUA_ALLOWED_ORIGINS", "").split(",")
+    configured = allowed_origins if allowed_origins is not None else os.environ.get("JARVIS_ALLOWED_ORIGINS", "").split(",")
     app.add_middleware(OriginGuard, allowed_origins=defaults | {value.strip() for value in configured if value.strip()})
 
     @app.exception_handler(RunnerCoreError)
@@ -145,6 +145,10 @@ def create_app(*, manager: RunnerManager | None = None, settings: Settings | Non
     async def active() -> dict | None:
         return await manager.get_active_run_detail()
 
+    @app.get("/api/runs/running")
+    async def running() -> list[dict]:
+        return await manager.get_running_run_details()
+
     @app.get("/api/runs/{run_id}")
     async def detail(run_id: str) -> dict:
         return await manager.get_run_detail(run_id)
@@ -152,6 +156,18 @@ def create_app(*, manager: RunnerManager | None = None, settings: Settings | Non
     @app.post("/api/runs/{run_id}/stop")
     async def stop(run_id: str) -> dict:
         return await manager.stop_run(run_id)
+
+    @app.post("/api/runs/{run_id}/steer", status_code=202)
+    async def steer(run_id: str, request: Request) -> dict:
+        return await manager.steer_run(run_id, await request.json())
+
+    @app.post("/api/runs/{run_id}/pause")
+    async def pause(run_id: str) -> dict:
+        return await manager.pause_run(run_id)
+
+    @app.post("/api/runs/{run_id}/resume")
+    async def resume(run_id: str) -> dict:
+        return await manager.resume_run(run_id)
 
     @app.get("/api/runs/{run_id}/replay")
     async def replay(run_id: str) -> dict:

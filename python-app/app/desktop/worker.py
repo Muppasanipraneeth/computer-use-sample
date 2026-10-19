@@ -42,13 +42,13 @@ def check_desktop(pyautogui):
         services.AXIsProcessTrusted.restype = ctypes.c_bool
         if not services.AXIsProcessTrusted():
             raise RuntimeError(
-                "macOS Accessibility permission is required for PyAutoGUI. Enable the app launching the runner (Terminal or Codex) in System Settings > Privacy & Security > Accessibility, then retry."
+                "macOS Accessibility permission is required to use the mouse and keyboard. Turn on Jarvis in System Settings > Privacy & Security > Accessibility (or the Terminal app, if you started the runner yourself), then retry."
             )
         import Quartz
 
         if not Quartz.CGPreflightScreenCaptureAccess():
             raise RuntimeError(
-                "macOS Screen Recording permission is required. Enable the app launching the runner in System Settings > Privacy & Security > Screen Recording, then restart it."
+                "macOS Screen Recording permission is required to see the screen. Turn on Jarvis in System Settings > Privacy & Security > Screen Recording (or the Terminal app, if you started the runner yourself), then quit and reopen Jarvis."
             )
     return width, height
 
@@ -115,6 +115,10 @@ def execute(code, namespace):
             pass
 
     namespace.update(log=log, display=display)
+    # The runner interrupts code that overruns its deadline (SIGINT → KeyboardInterrupt), so only this exec can be
+    # interrupted; outside it the signal is ignored, and an interrupt racing a finished step can't kill the worker.
+    if os.name != "nt":
+        signal.signal(signal.SIGINT, signal.default_int_handler)
     try:
         with contextlib.redirect_stdout(Writer()), contextlib.redirect_stderr(Writer()):
             exec(compile(code, "<exec_py>", "exec"), namespace)  # noqa: S102 - Deliberate isolated model-code worker.
@@ -124,6 +128,9 @@ def execute(code, namespace):
             return {"error": {"code": "python_failsafe", "message": "Desktop fail-safe activated."}}
         # Preserve partial output and globals so the model can correct its code.
         output.append({"type": "input_text", "text": traceback.format_exc()[-4000:]})
+    finally:
+        if os.name != "nt":
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
     return {"output": output or [{"type": "input_text", "text": "exec_py completed with no output."}]}
 
 
@@ -168,7 +175,20 @@ def check_screenshot(pyautogui, expected_size):
         raise RuntimeError("Desktop screenshot exceeds 8 MiB.")
 
 
+def load_instrument(name):
+    """Instrument modules sit beside this file; the worker runs as a plain script, not as part of the app package."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{name}.py"))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def main():
+    if os.name != "nt":
+        signal.signal(signal.SIGINT, signal.SIG_IGN)  # see execute: only model code is interruptible
     enable_dpi_awareness()
     import pyautogui
 
@@ -176,6 +196,11 @@ def main():
     normalize_screenshots(pyautogui)
     check_screenshot(pyautogui, (width, height))
     namespace = {"__builtins__": __builtins__, "pyautogui": pyautogui}
+    if os.environ.get("JARVIS_WEB_INSTRUMENTS") == "1":
+        web_instruments = load_instrument("web_instruments")
+        namespace.update(read=web_instruments.read, web=web_instruments.web)
+    if os.environ.get("JARVIS_APPS_GATEWAY"):
+        namespace.update(apps=load_instrument("apps_instrument").apps)
     emit({"ready": True, "platform": sys.platform})
     if "--check" in sys.argv:
         return

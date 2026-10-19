@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.errors import RunnerCoreError
-from app.responses_loop import classify_response, create_default_responses_client, run_responses_code_loop
+from app.responses_loop import (
+    build_code_tool_definitions,
+    classify_response,
+    create_default_responses_client,
+    run_responses_code_loop,
+)
 
 
 def call(code="log('hello')", call_id="call-1", **overrides):
@@ -35,13 +40,15 @@ def response(*output, response_id="response-1", **overrides):
     return {"id": response_id, "status": "completed", "output": list(output), **overrides}
 
 
-def harness(*responses):
+def harness(*responses, steers=None):
+    turns = iter(steers or [])
     context = SimpleNamespace(
         signal=asyncio.Event(),
         detail={"run": {"prompt": "Move a card.", "model": "test-model"}},
         emit_event=AsyncMock(),
         sync_browser_state=AsyncMock(),
         capture_screenshot=AsyncMock(),
+        next_turn=AsyncMock(side_effect=lambda: next(turns, [])),
     )
     session = SimpleNamespace(
         execution=SimpleNamespace(
@@ -95,6 +102,36 @@ async def test_commentary_continues_and_unphased_message_is_final():
     assert result["final_assistant_message"] == "Finished"
     assert client.create.call_args_list[1].args[0]["input"] == []
     session.execution.execute.assert_not_called()
+
+
+async def test_follow_ups_join_the_next_turn_input_as_user_messages(tmp_path):
+    png = tmp_path / "card.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+    image = {"kind": "image", "path": str(png), "name": "card.png"}
+    context, session, client = harness(
+        response(call(), response_id="r1"),
+        response(message(), response_id="r2"),
+        steers=[[], [{"mode": "redirect", "message": "Move it to Done.", "attachments": [image]}]],
+    )
+    await run_responses_code_loop(context, session, "Instructions", 3, client=client)
+    second = client.create.call_args_list[1].args[0]["input"]
+    assert second[0]["type"] == "function_call_output"
+    assert second[1]["role"] == "user"
+    text, picture = second[1]["content"]
+    assert text["text"].startswith("The user changed the request: Move it to Done.\nFollow this from now on;")
+    assert f"- image card.png: {png}" in text["text"]
+    assert picture == {"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode(png.read_bytes()).decode()}
+
+
+async def test_attached_image_rides_with_the_opening_task(tmp_path):
+    jpeg = tmp_path / "plan.jpg"
+    jpeg.write_bytes(b"jpeg")
+    context, session, client = harness(response(message()))
+    context.detail["run"]["attachments"] = [{"kind": "image", "path": str(jpeg), "name": "plan.jpg"}]
+    await run_responses_code_loop(context, session, "Instructions", 3, client=client)
+    [opening] = client.create.call_args_list[0].args[0]["input"]
+    assert opening["content"][0]["text"].startswith("Move a card.\n\nThe user attached these:\n- image plan.jpg:")
+    assert opening["content"][1]["image_url"] == "data:image/jpeg;base64," + base64.b64encode(b"jpeg").decode()
 
 
 @pytest.mark.parametrize(
@@ -180,3 +217,36 @@ def test_default_client_requires_api_key(monkeypatch):
     with pytest.raises(RunnerCoreError) as error:
         create_default_responses_client()
     assert error.value.code == "missing_api_key"
+
+
+async def test_null_budget_keeps_looping_past_the_old_cap():
+    calls = [response(call(f"log({turn})", f"call-{turn}"), response_id=f"r{turn}") for turn in range(1, 60)]
+    context, session, client = harness(*calls, response(message(), response_id="r60"))
+    result = await run_responses_code_loop(context, session, "Instructions", None, client=client)
+    assert result["final_assistant_message"] == "Done."
+    assert client.create.await_count == 60
+
+
+def tool_text(**kwargs):
+    return build_code_tool_definitions("darwin", **kwargs)[0]["parameters"]["properties"]["code"]["description"]
+
+
+def test_unreal_desktop_tool_keeps_unreal_lines():
+    text = tool_text(desktop_app=True, target_label="Unreal Editor")
+    assert "Unreal Editor is already open on the primary display. No practice web lab is open." in text
+    assert "Operate only Unreal Editor. Do not click the operator console or other windows." in text
+    assert "Start with display" not in text
+
+
+def test_general_desktop_tool_names_instruments_not_unreal():
+    text = tool_text(desktop_app=True, target_label="the desktop", web=True)
+    assert "Unreal Editor" not in text  # The instrument guidance may still name Unreal as an example desktop app.
+    assert "Never click or type in the Jarvis window." in text
+    assert "web.goto" in text and "read(url)" in text
+    assert "Start with display" not in text
+    offline = tool_text(desktop_app=True, target_label="the desktop")
+    assert "Only pyautogui (this computer) is available." in offline and "Unreal" not in offline
+
+
+def test_lab_tool_still_starts_with_a_screenshot():
+    assert "Start with display(pyautogui.screenshot())." in tool_text()

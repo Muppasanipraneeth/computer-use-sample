@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
-import type { RunDetail, RunEvent, StartRunResponse } from "@cua-sample/contracts";
+import type { RunDetail, RunEvent, StartRunResponse } from "@jarvis/contracts";
 
 const expectedExecutionTimeoutMs = 60_000;
 
@@ -91,7 +91,7 @@ describe("worker cancellation over HTTP", () => {
     ["pending browser operation", 'await page.waitForSelector("#never-added", { timeout: 0 });', false],
     [`${expectedExecutionTimeoutMs / 1000}-second deadline expiry`, "while (true) {}", true],
   ] as const)("keeps health and SSE responsive during a %s and awaits owned process exit", async (_name, code, deadline) => {
-    const dataRoot = await mkdtemp(join(tmpdir(), "cua-worker-http-"));
+    const dataRoot = await mkdtemp(join(tmpdir(), "jarvis-worker-http-"));
     let entered = false;
     let responseCount = 0;
     let mockAddress = "";
@@ -124,7 +124,7 @@ describe("worker cancellation over HTTP", () => {
     try {
       child = fork(fileURLToPath(new URL("./fixtures/worker-server.ts", import.meta.url)), [], {
         execArgv: ["--import", createRequire(new URL("../../../package.json", import.meta.url)).resolve("tsx")],
-        env: { ...process.env, CUA_TEST_DATA_ROOT: dataRoot, OPENAI_API_KEY: "integration-test-key", OPENAI_BASE_URL: `${mockAddress}/v1` },
+        env: { ...process.env, JARVIS_TEST_DATA_ROOT: dataRoot, OPENAI_API_KEY: "integration-test-key", OPENAI_BASE_URL: `${mockAddress}/v1` },
         stdio: ["ignore", "pipe", "pipe", "ipc"],
       });
       child.stdout?.on("data", () => undefined);

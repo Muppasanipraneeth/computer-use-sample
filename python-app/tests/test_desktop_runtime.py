@@ -25,13 +25,13 @@ async def test_persistent_state_unicode_and_credential_isolation(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-do-not-pass")
     monkeypatch.setenv("OpenAI_Api_Key", "test-case-insensitive")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-do-not-pass")
-    monkeypatch.setenv("CUA_COMPATIBLE_API_KEY", "test-do-not-pass")
+    monkeypatch.setenv("JARVIS_COMPATIBLE_API_KEY", "test-do-not-pass")
     session = await runtime()
     try:
         first = await session.execute("counter = 41\nprint(os.getpid())")
         pid = int(first["output"][0]["text"])
         assert (await session.execute("print(counter + 1, 'café 😀')"))["output"][0]["text"] == "42 café 😀\n"
-        secret_names = "{'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'CUA_COMPATIBLE_API_KEY'}"
+        secret_names = "{'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'JARVIS_COMPATIBLE_API_KEY'}"
         assert (await session.execute(f"print([k for k in os.environ if k.upper() in {secret_names}])"))["output"][0][
             "text"
         ] == "[]\n"
@@ -43,10 +43,33 @@ async def test_persistent_state_unicode_and_credential_isolation(monkeypatch):
         await session.execute("print('late')")
 
 
-async def test_deadline_kills_worker_before_single_input_release(tmp_path):
+@pytest.mark.skipif(os.name == "nt", reason="Overrunning code is interrupted with SIGINT, which Windows lacks.")
+async def test_overrunning_step_is_stopped_and_the_session_continues(tmp_path):
     helper = tmp_path / "release.py"
     marker = tmp_path / "released"
+    helper.write_text(
+        "import json\n"
+        f"with open({str(marker)!r}, 'a') as log: log.write('released\\n')\n"
+        "print(json.dumps({'released': True}), flush=True)\n"
+    )
     session = await runtime(release_helper_path=helper, execution_timeout_ms=100)
+    try:
+        await session.execute("pages = ['kept']")
+        result = await session.execute("print('partial')\nwhile True: pass")
+        note, report = (item["text"] for item in result["output"])
+        assert "still running after 0.1 s, so it was stopped" in note
+        assert report.startswith("partial") and "KeyboardInterrupt" in report
+        # Inputs the stopped code may have held are released, and the run goes on with its variables.
+        assert marker.read_text() == "released\n"
+        assert (await session.execute("print(pages[0])"))["output"][0]["text"] == "kept\n"
+    finally:
+        await session.close()
+
+
+async def test_code_that_ignores_the_interrupt_ends_the_session_before_input_release(tmp_path):
+    helper = tmp_path / "release.py"
+    marker = tmp_path / "released"
+    session = await runtime(release_helper_path=helper, execution_timeout_ms=100, interrupt_grace_ms=200)
     pid = session.child.pid
     helper.write_text(
         "import json, os\n"
@@ -56,8 +79,9 @@ async def test_deadline_kills_worker_before_single_input_release(tmp_path):
         f"with open({str(marker)!r}, 'a') as log: log.write('released\\n')\n"
         "print(json.dumps({'released': True}), flush=True)\n"
     )
+    stubborn = "import signal\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\nwhile True: pass"
     with pytest.raises(PythonRuntimeError, match="exceeded 100ms"):
-        await session.execute("while True: pass")
+        await session.execute(stubborn)
     await asyncio.gather(session.close(), session.close())
     assert marker.read_text() == "released\n"
 
@@ -92,7 +116,7 @@ async def test_release_failures_remain_observable_on_repeated_close(tmp_path, mo
 
 async def test_worker_cannot_be_spawned():
     with pytest.raises(PythonRuntimeError, match="Could not start local Python"):
-        await launch_python_runtime(python_path="/missing-cua-python")
+        await launch_python_runtime(python_path="/missing-jarvis-python")
 
 
 async def test_startup_permission_error_is_preserved(tmp_path):

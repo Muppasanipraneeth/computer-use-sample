@@ -20,12 +20,12 @@ def shortcut_instruction(platform: str) -> str:
 def desktop_permission_hint(platform: str) -> str:
     if platform == "darwin":
         return (
-            "On macOS, grant Accessibility and Screen Recording to the app that launched the runner, "
-            "then restart that app."
+            "On macOS, turn on Jarvis (or the Terminal you started the runner from) under System Settings > "
+            "Privacy & Security > Accessibility and > Screen Recording, then reopen it."
         )
     if platform == "win32":
         return (
             "On Windows, start the runner from a normal graphical desktop session, not a service, "
-            "and leave Unreal Editor on the primary display."
+            "and keep the target app on the primary display."
         )
-    return "Use a graphical desktop session and leave Unreal Editor on the primary display."
+    return "Use a graphical desktop session and keep the target app on the primary display."
