@@ -8,7 +8,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-import { BrowserWindow, ipcMain, screen } from "electron";
+import { BrowserWindow, clipboard, ipcMain, screen } from "electron";
 
 import { FACE_SIZES, faceCaption, faceMode, faceScale, faceState, faceVisible, moodFor, placeFace, snapFace } from "./avatar-mood.mjs";
 
@@ -31,6 +31,7 @@ export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, 
   let lingering = null;
   let snoozedUntil = 0;
   let dragFrom = null;
+  let hovered = false; // the pointer is over the face, caption or line
   // heard: the user's words, live while they talk (from the speech worker), kept while Jarvis thinks.
   const face = { voice: "off", task: null, text: "", heard: "", mood: "neutral" };
 
@@ -135,16 +136,22 @@ export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, 
     }
   }
 
-  // When a conversation ends the face stays a moment, then settles back into the line (or hides).
+  // When a conversation ends the face stays a moment, then settles back into the line (or hides); not while the pointer
+  // is over it, so the caption stays up to be copied.
   function settle() {
     if (faceVisible(face.voice, face.task) || lingering) return;
-    lingering = setTimeout(() => {
+    const done = () => {
+      if (hovered) {
+        lingering = setTimeout(done, 400);
+        return;
+      }
       lingering = null;
       face.text = "";
       face.heard = "";
       face.mood = "neutral";
       void publish();
-    }, LINGER_MS);
+    };
+    lingering = setTimeout(done, LINGER_MS);
   }
 
   function setTask(task, text = "", outcome = null) {
@@ -194,7 +201,10 @@ export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, 
     else if (name === "settings") onSettings();
   }
 
-  ipcMain.on("avatar:interactive", (_event, on) => win?.setIgnoreMouseEvents(!on, { forward: true }));
+  ipcMain.on("avatar:interactive", (_event, on) => {
+    hovered = Boolean(on);
+    win?.setIgnoreMouseEvents(!on, { forward: true });
+  });
   ipcMain.on("avatar:faded", () => {
     if (!win || win.isDestroyed()) return;
     // Something new may have come in while it faded out.
@@ -228,6 +238,10 @@ export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, 
     if (["tap", "hold-start", "hold-end"].includes(kind)) onTalk(kind);
   });
   ipcMain.on("avatar:action", (_event, name, value) => act(name, value));
+  // A click on the caption copies its words (the dictated text, what was heard, or what Jarvis said).
+  ipcMain.on("avatar:copy", (_event, text) => {
+    if (typeof text === "string" && text.trim()) clipboard.writeText(text.trim().slice(0, 4000));
+  });
   // Screens added, removed or rearranged: a dragged spot that's now off screen falls back to its preset.
   for (const event of ["display-added", "display-removed", "display-metrics-changed"]) screen.on(event, () => applyBounds());
 

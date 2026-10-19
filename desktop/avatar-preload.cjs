@@ -12,4 +12,5 @@ contextBridge.exposeInMainWorld("avatarApi", {
   open: () => ipcRenderer.send("avatar:open"),
   talk: (kind) => ipcRenderer.send("avatar:talk", kind),
   action: (name, value) => ipcRenderer.send("avatar:action", name, value),
+  copy: (text) => ipcRenderer.send("avatar:copy", text),
 });

@@ -402,7 +402,7 @@ const LISTEN_SHORTCUT = "CommandOrControl+Shift+Space";
 // the compiled Swift helper; Windows runs a PowerShell script whose C# hook compiles at start (1–2 s before "ready").
 const CONTROL_KEY = process.platform === "win32" ? path.join(directory, "native", "control-key.ps1") : path.join(directory, "native", "control-key");
 const controlKeyAvailable = (process.platform === "darwin" || process.platform === "win32") && existsSync(CONTROL_KEY);
-let controlKey = null; // { child, hold } while voice is on and the setting allows it
+let controlKey = null; // { child, hold, dictate } while voice is on and the setting allows it
 // Music stays ducked for the whole exchange: listening, thinking, Jarvis speaking, and the follow-up window after it.
 let workerState = "off";
 let conversationBusy = false;
@@ -455,11 +455,17 @@ function startControlKey() {
     end: () => voice?.worker.postMessage({ type: "release" }),
     cancel: () => voice?.worker.postMessage({ type: "release", cancel: true }),
   });
+  // Control+Option held: dictation, the words typed where the cursor is (macOS; the Windows hook doesn't report it).
+  const dictate = createHoldKey({
+    start: () => voice?.worker.postMessage({ type: "listen-now", hold: true, dictate: true, lookbackSeconds: HOLD_MS / 1000 }),
+    end: () => voice?.worker.postMessage({ type: "release" }),
+    cancel: () => voice?.worker.postMessage({ type: "release", cancel: true }),
+  });
   const child =
     process.platform === "win32"
       ? spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", CONTROL_KEY], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true })
       : spawn(CONTROL_KEY, [], { stdio: ["pipe", "pipe", "ignore"] });
-  controlKey = { child, hold };
+  controlKey = { child, hold, dictate };
   let partial = "";
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
@@ -467,12 +473,14 @@ function startControlKey() {
     partial = lines.pop();
     for (const line of lines) {
       if (line === "untrusted") voiceDebug("control key: no Accessibility permission, so holding Control does nothing");
+      else if (line.startsWith("dictate-")) dictate.handle(line.slice("dictate-".length));
       else hold.handle(line);
     }
   });
   child.on("error", (error) => voiceDebug(`control key: ${error.message}`));
   child.once("exit", () => {
     hold.reset();
+    dictate.reset();
     if (controlKey?.child === child) controlKey = null;
   });
 }
@@ -481,7 +489,29 @@ function stopControlKey() {
   const current = controlKey;
   controlKey = null;
   current?.hold.reset();
+  current?.dictate.reset();
   current?.child.kill();
+}
+
+/**
+ * Dictation: types what was said where the user's cursor is, the way a dictation app does: the words go on the
+ * clipboard and the key watcher (which has Accessibility) presses ⌘V; then their clipboard comes back. Text, rich text
+ * and images are put back; anything else they had copied (files from Finder) is replaced by the words.
+ */
+async function typeDictation(text) {
+  const words = text.replace(/\s+/g, " ").trim();
+  if (!words || !controlKey) return;
+  const saved = { text: clipboard.readText(), html: clipboard.readHTML(), rtf: clipboard.readRTF(), image: clipboard.readImage() };
+  clipboard.writeText(words);
+  controlKey.child.stdin.write("paste\n");
+  avatar?.voice({ text: words });
+  log.info(`dictation: typed ${words.length} characters`);
+  // The app reads the clipboard when the ⌘V reaches it; give it that moment before putting theirs back.
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  if (clipboard.readText() !== words) return; // they copied something meanwhile: keep it
+  if (saved.text || saved.html || saved.rtf || !saved.image.isEmpty()) {
+    clipboard.write({ text: saved.text, html: saved.html || undefined, rtf: saved.rtf || undefined, image: saved.image.isEmpty() ? undefined : saved.image });
+  } else clipboard.clear();
 }
 
 function voiceDebug(line) {
@@ -780,12 +810,16 @@ async function startVoice(owner) {
         if (message.state === "hearing") avatar?.voice({ heard: "" });
         send("voice:state", message);
       } else if (message.type === "partial") {
-        // The words so far while the user talks: in the message box and under the floating face.
-        const text = spokenText(message.text);
+        // The words so far while the user talks: under the floating face, and in the message box unless they're
+        // dictating into another app. Dictation keeps every word ("Jarvis is…" is theirs, not a wake phrase).
+        const dictation = message.source === "dictation";
+        const text = dictation ? message.text.trim() : spokenText(message.text);
         if (text) {
-          send("voice:partial", { text, source: message.source });
+          if (!dictation) send("voice:partial", { text, source: message.source });
           avatar?.voice({ heard: text });
         }
+      } else if (message.type === "command" && message.source === "dictation") {
+        void typeDictation(message.text);
       } else if (message.type === "command") {
         avatar?.voice({ heard: spokenText(message.text) });
         send("voice:command", { ...parseVoiceCommand(message.text), text: message.text, source: message.source });

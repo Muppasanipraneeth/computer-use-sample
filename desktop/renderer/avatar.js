@@ -189,6 +189,7 @@ function drawLine(t) {
 const QUIET = { hearing: "Listening…", transcribing: "Got it…", thinking: "Thinking…" };
 
 let voiceOn = false;
+let captionWords = ""; // what the caption says, without decoration: what a click copies ("" for Listening… etc.)
 api.onState(({ state: nextState, mood: nextMood, caption: text, heard, show, expanded, voiceOn: nextVoiceOn, options }) => {
   if (options) markOptions(options);
   // Hiding fades out with the last expression in place.
@@ -209,9 +210,10 @@ api.onState(({ state: nextState, mood: nextMood, caption: text, heard, show, exp
   root.classList.toggle("voice-on", voiceOn);
   lineHint.textContent = voiceOn ? "Click to talk · hold to keep talking" : "Click to open Jarvis";
   const words = text || QUIET[state] || "";
-  captionText.textContent = words;
+  captionWords = text || "";
+  // The user's own words, live while they talk (the prompt as Jarvis heard it), are quoted.
+  captionText.textContent = text && heard ? `“${text}”` : words;
   caption.classList.toggle("quiet", !text && Boolean(QUIET[state]));
-  // The user's own words, live while they talk: the prompt as Jarvis heard it.
   caption.classList.toggle("heard", Boolean(text) && Boolean(heard));
   root.classList.toggle("has-caption", Boolean(words));
   root.classList.add("shown");
@@ -320,4 +322,13 @@ gestures(line, {
     else if (!down) api.open();
   },
 });
-caption.addEventListener("click", () => api.open());
+// The caption copies its words (the window never takes focus, so selecting and ⌘C can't work here). The face opens
+// Jarvis.
+let copiedTimer = null;
+caption.addEventListener("click", () => {
+  if (!captionWords) return;
+  api.copy(captionWords);
+  clearTimeout(copiedTimer);
+  caption.classList.add("copied");
+  copiedTimer = setTimeout(() => caption.classList.remove("copied"), 1100);
+});

@@ -1,6 +1,7 @@
 // Electron utility process: wake word → end-of-speech → speech-to-text, all on this machine (sherpa-onnx).
 // Input: { type: "init", paths } once, then { type: "audio", samples: Float32Array } at 16 kHz, plus
-//   { type: "listen-now", hold?, lookbackSeconds? } (push-to-talk; hold: until "release"), { type: "release", cancel? },
+//   { type: "listen-now", hold?, lookbackSeconds?, dictate? } (push-to-talk; hold: until "release"; dictate: the words
+//   are to be typed, not obeyed, so the capture's source is "dictation"), { type: "release", cancel? },
 //   { type: "speaking", on, followUp }.
 // Output: { type: "ready" | "error" | "state" | "command" | "partial" }; "partial" is the words so far while the user
 // talks. Jarvis's own voice is speaker.mjs, a separate process.
@@ -346,9 +347,10 @@ process.parentPort.on("message", ({ data }) => {
     } else if (data.type === "audio" && spotter) {
       onAudio(data.samples);
     } else if (data.type === "listen-now" && spotter && !capture) {
-      // Push-to-talk: no wake phrase to skip. A held key started a moment before it counted as a hold, so look back.
+      // Push-to-talk or dictation: no wake phrase to skip. A held key started a moment before it counted as a hold, so
+      // look back.
       const lookback = Math.round(Math.min(Math.max(Number(data.lookbackSeconds) || 0, 0), 1) * RATE);
-      startCapture(total - lookback, "push-to-talk", data.hold === true);
+      startCapture(total - lookback, data.dictate === true ? "dictation" : "push-to-talk", data.hold === true);
     } else if (data.type === "release" && capture?.held) {
       if (data.cancel) {
         // It was a shortcut (Ctrl+C) after all: drop what was heard.
