@@ -127,8 +127,18 @@ class RunQuestion(WireModel):
     _date = field_validator("created_at")(valid_timestamp)
 
 
+class RunWorkspace(WireModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+
+
+class StartRunWorkspace(RunWorkspace):
+    """The user's workspace for a new run; only its name is kept on the run record."""
+    model_config = ConfigDict(extra="forbid", populate_by_name=False, validate_by_name=False)
+    instructions: Annotated[str, StringConstraints(strip_whitespace=True, max_length=4000)] = ""
+
+
 class RunRecord(WireModel):
-    nullable = frozenset({"max_response_turns", "question"})
+    nullable = frozenset({"max_response_turns", "question", "workspace"})
     id: Text
     scenario_id: Text
     lab_id: LabId
@@ -147,6 +157,8 @@ class RunRecord(WireModel):
     attachments: list[RunAttachment] | None = None
     # Non-null while the running run waits for the user's answer; live runs carry null otherwise, older records omit it.
     question: RunQuestion | None = None
+    # The user's workspace the run was started in; live runs carry null without one, older records omit it.
+    workspace: RunWorkspace | None = None
 
     _dates = field_validator("started_at", "completed_at")(valid_timestamp)
 
@@ -203,6 +215,7 @@ class StartRunRequest(WireModel):
     prompt: Text
     model: Text | None = None
     attachments: Attachments | None = None
+    workspace: StartRunWorkspace | None = None
 
 
 class SteerRunRequest(WireModel):

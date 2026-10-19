@@ -206,12 +206,13 @@ export function routeScenario(prompt, selectedId, scenarioIds) {
 }
 
 /** Desktop runs have no turn limit (`maxResponseTurns: null`): the agent works until it answers or the operator presses Stop. */
-export function startRunBody(scenarioId, prompt, model, attachments = []) {
+export function startRunBody(scenarioId, prompt, model, attachments = [], workspace = null) {
   const command = prompt.trim();
   if (!scenarioId) throw new Error("Choose a scenario first.");
   if (!command) throw new Error("Enter a command first.");
   if (!model.trim() || model.endsWith(":")) throw new Error("Choose a signed-in model first.");
   const files = wireAttachments(attachments);
+  const place = wireWorkspace(workspace);
   return {
     scenarioId,
     prompt: command,
@@ -219,7 +220,15 @@ export function startRunBody(scenarioId, prompt, model, attachments = []) {
     browserMode: "headful",
     maxResponseTurns: null,
     ...(files.length > 0 ? { attachments: files } : {}),
+    ...(place ? { workspace: place } : {}),
   };
+}
+
+/** One of the user's workspaces as the runner takes it ({ name, instructions }), or null without a usable name. */
+export function wireWorkspace(workspace) {
+  const name = typeof workspace?.name === "string" ? workspace.name.trim().slice(0, 80) : "";
+  if (!name) return null;
+  return { name, instructions: typeof workspace.instructions === "string" ? workspace.instructions.trim().slice(0, 4000) : "" };
 }
 
 export const MAX_ATTACHMENTS = 10;
@@ -553,7 +562,8 @@ export function projectRun(detail) {
     prompt: String(run.prompt ?? ""),
     model: String(run.model ?? ""),
     scenarioId: String(run.scenarioId ?? ""),
-    scenarioTitle: String(detail?.scenario?.title ?? run.scenarioId ?? ""),
+    // A run in one of the user's workspaces is labelled with it rather than the Any task scenario underneath.
+    scenarioTitle: String((typeof run.workspace?.name === "string" && run.workspace.name) || detail?.scenario?.title || run.scenarioId || ""),
     startedAt: run.startedAt ?? null,
     completedAt: run.completedAt ?? null,
     durationMs: Number.isFinite(run.durationMs) ? run.durationMs : null,

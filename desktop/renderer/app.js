@@ -90,6 +90,10 @@ const state = {
   // Newest first. Each chat keeps its own runs and "up next" queue; a run keeps working when you open another chat.
   chats: savedChats(),
   chatId: saved.chatId ?? "",
+  // Workspaces the user made: { id, name, instructions, folder: { path, name } | null }. Chats point at one by id;
+  // workspaceId is the one open in the sidebar (null: the built-in workspaces, Any task and the labs).
+  workspaces: savedWorkspaces(),
+  workspaceId: null,
   runs: new Map(),
   live: new Set(), // runs still working, in any chat; all of them are polled
   stopping: new Set(),
@@ -110,6 +114,8 @@ const state = {
   voiceHoldKey: false, // the Control-key watcher exists (macOS, built at start)
 };
 if (!state.chats.some((chat) => chat.id === state.chatId)) state.chatId = state.chats[0].id;
+// The open chat decides which workspace is open, so the two can never disagree after a restart.
+state.workspaceId = state.chats.find((chat) => chat.id === state.chatId)?.workspaceId ?? null;
 // The open chat's runs and its working run; everything that only concerns what's on screen reads these.
 Object.defineProperties(state, {
   thread: {
@@ -134,9 +140,9 @@ function loadSaved() {
   }
 }
 
-function newChatRecord() {
+function newChatRecord(workspaceId = null) {
   // routineId: the chat a routine reuses each time it runs, so its results stack up in one place.
-  return { id: crypto.randomUUID(), title: "", thread: [], queue: [], unread: false, routineId: null };
+  return { id: crypto.randomUUID(), title: "", thread: [], queue: [], unread: false, routineId: null, workspaceId };
 }
 
 function savedAttachments(list) {
@@ -145,9 +151,21 @@ function savedAttachments(list) {
     : [];
 }
 
+function savedWorkspaces() {
+  return (Array.isArray(saved.workspaces) ? saved.workspaces : [])
+    .filter((item) => item && typeof item.id === "string" && typeof item.name === "string" && item.name.trim())
+    .map((item) => ({
+      id: item.id,
+      name: item.name.trim().slice(0, 80),
+      instructions: String(item.instructions ?? "").slice(0, 4000),
+      folder: item.folder && typeof item.folder.path === "string" ? { path: item.folder.path, name: String(item.folder.name ?? "") } : null,
+    }));
+}
+
 /** Chats from storage; the single thread older versions kept becomes the first chat. */
 function savedChats() {
   const ids = (list) => (Array.isArray(list) ? list.filter((id) => typeof id === "string" && id !== "pending") : []);
+  const workspaceIds = new Set(savedWorkspaces().map((item) => item.id));
   const chats = (Array.isArray(saved.chats) ? saved.chats : [])
     .filter((chat) => chat && typeof chat.id === "string")
     .map((chat) => ({
@@ -157,6 +175,7 @@ function savedChats() {
       queue: (Array.isArray(chat.queue) ? chat.queue : []).filter((item) => typeof item?.prompt === "string").map((item) => ({ prompt: item.prompt, attachments: savedAttachments(item.attachments) })),
       unread: chat.unread === true,
       routineId: typeof chat.routineId === "string" ? chat.routineId : null,
+      workspaceId: workspaceIds.has(chat.workspaceId) ? chat.workspaceId : null,
     }));
   if (chats.length === 0) chats.push({ ...newChatRecord(), thread: ids(saved.thread) });
   return chats;
@@ -173,12 +192,21 @@ function persist() {
       prefs: state.prefs,
       chatId: state.chatId,
       chats: state.chats.map((chat) => ({ ...chat, thread: chat.thread.filter((id) => id !== "pending").slice(-50) })),
+      workspaces: state.workspaces,
     }),
   );
 }
 
 function currentChat() {
   return state.chats.find((chat) => chat.id === state.chatId) ?? state.chats[0];
+}
+
+function workspaceById(id) {
+  return state.workspaces.find((item) => item.id === id) ?? null;
+}
+
+function currentWorkspace() {
+  return workspaceById(state.workspaceId);
 }
 
 function chatOf(runId) {
@@ -261,18 +289,59 @@ function scenarioButton(item) {
   button.type = "button";
   button.title = item.description ?? "";
   button.setAttribute("role", "option");
-  button.setAttribute("aria-selected", String(item.id === state.scenarioId));
+  button.setAttribute("aria-selected", String(item.id === state.scenarioId && !state.workspaceId));
   const mark = icon(SCENARIO_ICONS[item.id] ?? LAB_ICONS[item.labId] ?? "monitor", "scenario-icon");
   mark.dataset.tone = SCENARIO_TONES[item.id] ?? LAB_TONES[item.labId] ?? "sky";
   button.append(mark, el("span", "scenario-title", item.title));
   button.addEventListener("click", () => {
     state.scenarioId = item.id;
+    if (state.workspaceId) enterWorkspace(null);
     persist();
     renderScenarios();
     renderHeader();
     renderEmpty();
   });
   return button;
+}
+
+const WORKSPACE_TONES = ["peach", "mint", "sky", "lilac"];
+
+// The user's own workspaces, each with an edit button that shows on hover.
+function renderWorkspaces() {
+  const list = $("#workspace-list");
+  list.replaceChildren(
+    ...state.workspaces.map((workspace, index) => {
+      const button = el("button", "scenario");
+      button.type = "button";
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", String(workspace.id === state.workspaceId));
+      button.title = workspace.instructions || workspace.name;
+      const mark = icon("folder", "scenario-icon");
+      mark.dataset.tone = WORKSPACE_TONES[index % WORKSPACE_TONES.length];
+      button.append(mark, el("span", "scenario-title", workspace.name));
+      button.addEventListener("click", () => enterWorkspace(workspace.id));
+      const edit = el("button", "row-action");
+      edit.type = "button";
+      edit.setAttribute("aria-label", `Edit ${workspace.name}`);
+      edit.title = "Edit workspace";
+      edit.append(icon("edit"));
+      edit.addEventListener("click", () => openWorkspaceDialog(workspace));
+      const wrap = el("div", "row-wrap");
+      wrap.append(button, edit);
+      return wrap;
+    }),
+  );
+}
+
+/** Opens a workspace (null: back to the built-in ones): its most recent chat, or a fresh one. */
+function enterWorkspace(workspaceId) {
+  if (workspaceId === state.workspaceId) return;
+  if (workspaceId) state.scenarioId = "any-task"; // your workspaces run on Any task, with their own instructions
+  const chat = state.chats.find((item) => item.workspaceId === workspaceId && !item.routineId);
+  if (chat) return switchChat(chat.id);
+  const fresh = newChatRecord(workspaceId);
+  state.chats.unshift(fresh);
+  switchChat(fresh.id);
 }
 
 // Real workspaces (the desktop: Any task, Unreal) up front; the browser practice labs are for trying the agent out,
@@ -332,11 +401,16 @@ function renderRecent() {
   }
 }
 
-// Every chat, newest first. A spinner means a run there is still working; a dot means one finished while you were away.
+// The open workspace's chats, newest first. A spinner means a run there is still working; a dot means one finished
+// while you were away. Each row has a delete button: the first click arms it, the second deletes.
 function renderChats() {
   const list = $("#chat-list");
-  const rows = state.chats.map((chat) => ({ chat, working: Boolean(workingRunIn(chat)), title: chatTitle(chat) }));
-  const signature = rows.map(({ chat, working, title }) => `${chat.id}:${working}:${chat.unread}:${title}`).join("|") + `|${state.chatId}`;
+  const workspace = currentWorkspace();
+  $("#chats-heading").textContent = workspace ? `Chats in ${workspace.name}` : "Chats";
+  const rows = state.chats
+    .filter((chat) => chat.workspaceId === state.workspaceId)
+    .map((chat) => ({ chat, working: Boolean(workingRunIn(chat)), title: chatTitle(chat) }));
+  const signature = rows.map(({ chat, working, title }) => `${chat.id}:${working}:${chat.unread}:${title}`).join("|") + `|${state.chatId}|${state.workspaceId}`;
   if (list.dataset.sig === signature) return;
   list.dataset.sig = signature;
   list.replaceChildren();
@@ -350,10 +424,59 @@ function renderChats() {
     if (chat.unread) button.append(el("span", "unread-dot"));
     button.title = working ? `${title} (still working)` : title;
     button.addEventListener("click", () => switchChat(chat.id));
-    const item = el("li");
-    item.append(button);
+    const remove = el("button", "row-action");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `Delete ${title}`);
+    remove.title = "Delete chat";
+    remove.append(icon("trash"));
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (!remove.classList.contains("confirm")) {
+        remove.classList.add("confirm");
+        remove.replaceChildren("Delete");
+        // Disarm if they don't follow through, so a later stray click can't delete it.
+        setTimeout(() => {
+          if (!remove.isConnected) return;
+          remove.classList.remove("confirm");
+          remove.replaceChildren(icon("trash"));
+        }, 3000);
+        return;
+      }
+      void deleteChat(chat.id);
+    });
+    const item = el("li", "row-wrap");
+    item.append(button, remove);
     list.append(item);
   }
+}
+
+/** Deletes a chat and its runs' files on the runner. A chat whose task is still working has to be stopped first. */
+async function deleteChat(chatId) {
+  const chat = state.chats.find((item) => item.id === chatId);
+  if (!chat) return;
+  if (workingRunIn(chat)) {
+    toast("Stop its task first, then delete the chat.", "info");
+    renderChats();
+    return;
+  }
+  const results = await Promise.all(chat.thread.filter((id) => id !== "pending").map((id) => bridge.deleteRun(id)));
+  // A run already gone (pruned by the runner, or never saved) is fine; anything else is reported but the chat still goes.
+  const failed = results.filter((result) => !result.ok && !result.missing);
+  for (const id of chat.thread) {
+    removeRunView(id);
+    state.runs.delete(id);
+  }
+  if (chat.id === state.chatId) {
+    // Move to another chat in the same workspace (or a fresh one) while this one still exists, then drop it.
+    const next = state.chats.find((item) => item !== chat && item.workspaceId === chat.workspaceId && !item.routineId) ?? newChatRecord(chat.workspaceId);
+    if (!state.chats.includes(next)) state.chats.unshift(next);
+    switchChat(next.id);
+  }
+  state.chats = state.chats.filter((item) => item !== chat);
+  if (state.chats.length === 0) state.chats.push(newChatRecord(state.workspaceId));
+  persist();
+  renderChats();
+  toast(failed.length ? `Chat deleted, but ${failed.length} run file${failed.length === 1 ? "" : "s"} couldn't be removed: ${failed[0].error}` : "Chat deleted.", failed.length ? "error" : "ok");
 }
 
 function renderAccounts() {
@@ -396,7 +519,7 @@ function renderRunner() {
 }
 
 function renderHeader() {
-  $("#crumb-title").textContent = scenario()?.title ?? "Jarvis";
+  $("#crumb-title").textContent = currentWorkspace()?.name ?? scenario()?.title ?? "Jarvis";
   $("#crumb-model").textContent = state.model ? modelLabel(state.model) : "No model";
 }
 
@@ -1409,7 +1532,7 @@ async function send(promptOverride, { chat = currentChat(), attachments } = {}) 
   if (!chat.title && chat.thread.length === 0) chat.title = prompt.slice(0, 80);
   const shown = chat === currentChat();
   if (shown) {
-    const pending = { runId: "pending", status: "starting", prompt, model: state.model, scenarioTitle: scenario()?.title ?? "", steps: [], attachments: files, reply: null, error: null, startedAt: new Date().toISOString() };
+    const pending = { runId: "pending", status: "starting", prompt, model: state.model, scenarioTitle: workspaceById(chat.workspaceId)?.name ?? scenario()?.title ?? "", steps: [], attachments: files, reply: null, error: null, startedAt: new Date().toISOString() };
     chat.thread.push("pending");
     state.runs.set("pending", pending);
     state.focusRunId = null;
@@ -1419,7 +1542,16 @@ async function send(promptOverride, { chat = currentChat(), attachments } = {}) 
   }
   renderComposer();
 
-  const result = await bridge.startRun({ scenarioId: state.scenarioId, model: state.model, prompt, attachments: files });
+  // A run in one of your workspaces goes to Any task with that workspace's instructions, and its folder attached.
+  const workspace = workspaceById(chat.workspaceId);
+  const withFolder = workspace?.folder && !files.some((item) => item.path === workspace.folder.path) ? [...files, { kind: "folder", ...workspace.folder }] : files;
+  const result = await bridge.startRun({
+    scenarioId: workspace ? "any-task" : state.scenarioId,
+    model: state.model,
+    prompt,
+    attachments: withFolder,
+    ...(workspace ? { workspace: { name: workspace.name, instructions: workspace.instructions } } : {}),
+  });
   state.sending = false;
   chat.thread = chat.thread.filter((id) => id !== "pending");
   state.runs.delete("pending");
@@ -1659,6 +1791,9 @@ function switchChat(chatId) {
   if (leaving.thread.length === 0 && leaving.queue.length === 0) state.chats = state.chats.filter((chat) => chat !== leaving);
   state.chatId = chatId;
   currentChat().unread = false;
+  // Opening a chat opens its workspace too (your workspaces always run on Any task).
+  state.workspaceId = currentChat().workspaceId;
+  if (state.workspaceId) state.scenarioId = "any-task";
   state.focusRunId = null;
   stickToBottom = true;
   persist();
@@ -1667,6 +1802,9 @@ function switchChat(chatId) {
   renderComposer();
   renderQueue();
   renderChats();
+  renderScenarios();
+  renderWorkspaces();
+  renderHeader();
   void restoreChat();
   $("#prompt").focus();
 }
@@ -1678,7 +1816,7 @@ function newChat() {
     $("#prompt").focus();
     return;
   }
-  const chat = newChatRecord();
+  const chat = newChatRecord(state.workspaceId);
   state.chats.unshift(chat);
   // Old, finished chats fall off the end; one with a task still working never does.
   while (state.chats.length > MAX_CHATS) {
@@ -1687,6 +1825,96 @@ function newChat() {
     state.chats.splice(index, 1);
   }
   switchChat(chat.id);
+}
+
+/* ---------- your workspaces ---------- */
+
+let editingWorkspace = null; // the workspace the dialog edits; null while creating one
+let workspaceFolder = null;
+
+function openWorkspaceDialog(workspace = null) {
+  editingWorkspace = workspace;
+  workspaceFolder = workspace?.folder ?? null;
+  $("#workspace-dialog-title").textContent = workspace ? "Edit workspace" : "New workspace";
+  $("#workspace-name").value = workspace?.name ?? "";
+  $("#workspace-instructions").value = workspace?.instructions ?? "";
+  $("#workspace-save").textContent = workspace ? "Save" : "Create";
+  $("#workspace-delete").hidden = !workspace;
+  resetWorkspaceDelete();
+  $("#workspace-status").textContent = "";
+  renderWorkspaceFolder();
+  $("#workspace-dialog").showModal();
+  $("#workspace-name").focus();
+}
+
+function renderWorkspaceFolder() {
+  $("#workspace-folder").textContent = workspaceFolder ? workspaceFolder.path : "No folder: Jarvis works anywhere.";
+  $("#workspace-folder").title = workspaceFolder?.path ?? "";
+  $("#workspace-folder-clear").hidden = !workspaceFolder;
+}
+
+async function pickWorkspaceFolder() {
+  const result = await bridge.pickAttachments("folder");
+  if (!result.ok) return toast(result.error, "error");
+  const [folder] = result.attachments;
+  if (!folder) return;
+  workspaceFolder = { path: folder.path, name: folder.name };
+  renderWorkspaceFolder();
+}
+
+function saveWorkspace() {
+  const name = $("#workspace-name").value.trim();
+  const status = $("#workspace-status");
+  status.classList.add("error");
+  if (!name) {
+    status.textContent = "Give it a name.";
+    $("#workspace-name").focus();
+    return;
+  }
+  const taken = state.workspaces.some((item) => item !== editingWorkspace && item.name.toLowerCase() === name.toLowerCase());
+  if (taken || state.scenarios.some((item) => item.title.toLowerCase() === name.toLowerCase())) {
+    status.textContent = "There's already a workspace with that name.";
+    return;
+  }
+  const fields = { name, instructions: $("#workspace-instructions").value.trim().slice(0, 4000), folder: workspaceFolder };
+  if (editingWorkspace) Object.assign(editingWorkspace, fields);
+  else state.workspaces.push({ id: crypto.randomUUID(), ...fields });
+  const created = editingWorkspace ? null : state.workspaces.at(-1);
+  persist();
+  $("#workspace-dialog").close();
+  renderWorkspaces();
+  renderChats();
+  renderHeader();
+  if (created) enterWorkspace(created.id);
+  toast(created ? `“${name}” is ready. Its chats stay here, and Jarvis follows its instructions.` : "Workspace saved.", "ok");
+}
+
+function resetWorkspaceDelete() {
+  const button = $("#workspace-delete");
+  button.dataset.armed = "";
+  button.textContent = "Delete workspace";
+}
+
+// Deleting a workspace keeps its chats: they move to the general list, so nothing you did is lost by accident.
+function deleteWorkspace() {
+  const button = $("#workspace-delete");
+  if (!editingWorkspace) return;
+  if (!button.dataset.armed) {
+    button.dataset.armed = "1";
+    button.textContent = "Click again to delete (its chats move to Chats)";
+    return;
+  }
+  const gone = editingWorkspace;
+  for (const chat of state.chats) if (chat.workspaceId === gone.id) chat.workspaceId = null;
+  state.workspaces = state.workspaces.filter((item) => item !== gone);
+  if (state.workspaceId === gone.id) state.workspaceId = null;
+  persist();
+  $("#workspace-dialog").close();
+  renderWorkspaces();
+  renderScenarios();
+  renderChats();
+  renderHeader();
+  toast(`Deleted “${gone.name}”. Its chats are under Chats now.`, "ok");
 }
 
 /* ---------- up next + attachments ---------- */
@@ -2287,6 +2515,20 @@ $("#model").addEventListener("change", (event) => {
   renderHeader();
 });
 $("#new-chat").addEventListener("click", newChat);
+$("#add-workspace").addEventListener("click", () => openWorkspaceDialog());
+$("#workspace-save").addEventListener("click", () => saveWorkspace());
+$("#workspace-delete").addEventListener("click", () => deleteWorkspace());
+$("#workspace-folder-pick").addEventListener("click", () => void pickWorkspaceFolder());
+$("#workspace-folder-clear").addEventListener("click", () => {
+  workspaceFolder = null;
+  renderWorkspaceFolder();
+});
+// Enter in the name field would submit (close) the dialog; save instead.
+$("#workspace-name").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  saveWorkspace();
+});
 $("#open-settings").addEventListener("click", () => openSettings());
 $("#account-pill").addEventListener("click", () => openSettings("accounts"));
 for (const tab of document.querySelectorAll("#settings .tab")) tab.addEventListener("click", () => selectSettingsTab(tab.id.replace("tab-", "")));
@@ -2413,6 +2655,7 @@ renderScenarios();
 renderAccounts();
 renderRecent();
 renderChats();
+renderWorkspaces();
 renderQueue();
 renderHeader();
 renderEmpty();

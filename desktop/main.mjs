@@ -781,8 +781,9 @@ app.whenReady().then(() => {
   handle("run:start", async (input) => {
     const prompt = input?.prompt ?? "";
     const scenarioIds = (await listScenarios()).map((item) => item.id);
-    const route = routeScenario(prompt, input?.scenarioId ?? "", scenarioIds);
-    const body = startRunBody(route.scenarioId, prompt, input?.model ?? "", input?.attachments ?? []);
+    // A run in one of the user's workspaces is already an Any task run, so the lab router stays out of it.
+    const route = input?.workspace ? { scenarioId: input?.scenarioId ?? "", rerouted: false } : routeScenario(prompt, input?.scenarioId ?? "", scenarioIds);
+    const body = startRunBody(route.scenarioId, prompt, input?.model ?? "", input?.attachments ?? [], input?.workspace ?? null);
     const { status, payload } = await requestJson("POST", "/api/runs", body, 60_000);
     if (status !== 202 || !payload || typeof payload !== "object") return { ok: false, error: runnerErrorText(payload) };
     return { ok: true, run: projectRun(payload.detail), rerouted: route.rerouted, scenarioId: route.scenarioId };
@@ -808,6 +809,14 @@ app.whenReady().then(() => {
     const { status, payload } = await requestJson("POST", `/api/runs/${runId}/stop`);
     if (status >= 400) return { ok: false, error: runnerErrorText(payload) };
     return { ok: true };
+  });
+
+  // Deleting a chat removes its runs' saved files (screenshots, workspace copies) from the runner too.
+  handle("run:delete", async (runId) => {
+    if (typeof runId !== "string" || !RUN_ID.test(runId)) return { ok: false, missing: true, error: "That run id is not valid." };
+    const { status, payload } = await requestJson("DELETE", `/api/runs/${runId}`, undefined, 15_000);
+    if (status === 404) return { ok: false, missing: true, error: runnerErrorText(payload) };
+    return status >= 400 ? { ok: false, error: runnerErrorText(payload) } : { ok: true };
   });
 
   handle("run:follow-up", async (request) => {

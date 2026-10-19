@@ -62,3 +62,21 @@ def test_profile_lives_in_the_desktop_apps_data_folder(tmp_path: Path, monkeypat
     monkeypatch.setattr(config.sys, "platform", "win32")
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
     assert profile_path() == tmp_path / "Roaming" / "Jarvis" / "profile.json"
+
+
+def test_workspace_section_follows_the_profile_and_memories() -> None:
+    workspace = {"name": "Taxes", "instructions": "Keep receipts in ~/Taxes."}
+    text = instructions("any-task", "desktop://primary", platform="darwin", web=True, profile={"name": "P"}, memories=["Likes tea."],
+                        workspace=workspace)
+    assert text.endswith('Workspace "Taxes"\nThe user set these instructions for every task in this workspace; follow them unless the '
+                         "task says otherwise:\nKeep receipts in ~/Taxes.")
+    assert text.index("- Name: P") < text.index("Likes tea.") < text.index('Workspace "Taxes"')
+    assert instructions("any-task", "desktop://primary", platform="darwin", workspace={"name": "Taxes", "instructions": ""}).endswith(
+        'Workspace "Taxes"')
+    lab = instructions("paint-draw-poster", "http://lab/index.html", workspace=workspace)
+    assert lab.endswith("Keep receipts in ~/Taxes.")
+
+
+def test_no_workspace_adds_no_section() -> None:
+    assert "Workspace" not in instructions("any-task", "desktop://primary", platform="darwin", web=True)
+    assert "Workspace" not in instructions("paint-draw-poster", "http://lab/index.html")

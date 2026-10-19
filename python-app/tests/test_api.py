@@ -383,3 +383,62 @@ async def test_invalid_attachments_are_rejected_before_allocation(api, tmp_path)
     response = await client.post("/api/runs", json={"scenarioId": "paint-draw-poster", "prompt": "Draw", "attachments": too_many})
     assert (response.status_code, response.json()["code"]) == (400, "invalid_request")
     assert not manager.storage.root.exists()
+
+
+async def test_workspace_is_validated_recorded_and_given_to_the_executor(tmp_path):
+    seen = []
+
+    async def execute(context):
+        seen.append(context.workspace)
+        await context.complete_run(notes=["done"])
+    template = tmp_path / "template"
+    template.mkdir()
+    scenarios = [{**item, "workspaceTemplatePath": str(template)} for item in list_scenarios()]
+    manager = RunnerManager(tmp_path / "data", executor=execute, scenarios=scenarios)
+    app = create_app(manager=manager, acquire_lease=False)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://runner") as client:
+        for workspace in ({"name": " " * 3}, {"name": "x" * 81}, {"name": "Taxes", "instructions": "y" * 4001},
+                          {"name": "Taxes", "folder": "/tmp"}, None):
+            response = await client.post("/api/runs", json={"scenarioId": "any-task", "prompt": "Go", "workspace": workspace})
+            assert (response.status_code, response.json()["code"]) == (400, "invalid_request")
+        assert not manager.storage.root.exists()
+
+        body = {"scenarioId": "any-task", "prompt": "Go", "workspace": {"name": "  Taxes ", "instructions": " Keep receipts. "}}
+        run = (await client.post("/api/runs", json=body)).json()["detail"]["run"]
+        assert run["workspace"] == {"name": "Taxes"}
+        await manager.contexts[run["id"]].execution
+        assert seen == [{"name": "Taxes", "instructions": "Keep receipts."}]
+        manager.contexts.clear()  # Read the finished run back from disk.
+        assert (await client.get(f"/api/runs/{run['id']}")).json()["run"]["workspace"] == {"name": "Taxes"}
+
+        plain = (await client.post("/api/runs", json={"scenarioId": "any-task", "prompt": "Go"})).json()["detail"]["run"]
+        assert plain["workspace"] is None
+        await manager.contexts[plain["id"]].execution
+        assert seen[-1] is None
+
+
+async def test_delete_removes_a_finished_run_and_refuses_running_unknown_and_bad_ids(api):
+    _, manager, client = api
+    run_id = (await client.post("/api/runs", json={"scenarioId": "paint-draw-poster", "prompt": "Draw"})).json()["runId"]
+    running = await client.delete(f"/api/runs/{run_id}")
+    assert (running.status_code, running.json()["code"], running.json()["error"]) == (409, "run_not_finished", "Stop the task before deleting it.")
+    assert manager.storage.run_dir(run_id).is_dir()
+
+    await client.post(f"/api/runs/{run_id}/stop")
+    frames = manager.storage.run_dir(run_id) / "model-frames"
+    frames.mkdir()
+    (frames / "a.png").write_bytes(b"png")
+    assert manager.storage.workspace(run_id).is_dir()
+    deleted = await client.delete(f"/api/runs/{run_id}")
+    assert (deleted.status_code, deleted.json()) == (200, {"ok": True, "deleted": run_id})
+    assert not manager.storage.run_dir(run_id).exists()
+    assert not manager.storage.workspace(run_id).exists()
+    assert (await client.get(f"/api/runs/{run_id}")).status_code == 404
+
+    again = await client.delete(f"/api/runs/{run_id}")
+    assert (again.status_code, again.json()["code"]) == (404, "run_not_found")
+    invalid = await client.delete("/api/runs/..%2Fworkspaces")
+    assert invalid.status_code in (400, 404)
+    bad = await client.delete("/api/runs/bad.id")
+    assert (bad.status_code, bad.json()["code"]) == (400, "invalid_request")
+    assert manager.storage.root.joinpath("runs").is_dir()

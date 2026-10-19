@@ -33,6 +33,16 @@ def uses_cloud_browser(scenario_id: str) -> bool:
     return bool(next(item for item in catalog()["scenarios"] if item["id"] == scenario_id).get("cloudBrowser"))
 
 
+def workspace_lines(workspace: dict[str, str] | None) -> list[str]:
+    """The user's workspace section; [] for a run started outside one."""
+    if not workspace:
+        return []
+    lines = [f'Workspace "{workspace["name"]}"']
+    if text := workspace.get("instructions", ""):
+        lines += ["The user set these instructions for every task in this workspace; follow them unless the task says otherwise:", text]
+    return lines
+
+
 def instructions(
     scenario_id: str,
     current_url: str,
@@ -44,6 +54,7 @@ def instructions(
     apps: bool = False,
     profile: dict[str, str] | None = None,
     memories: list[str] | None = None,
+    workspace: dict[str, str] | None = None,
 ) -> str:
     definition = next(item for item in catalog()["scenarios"] if item["id"] == scenario_id)
     host = platform or sys.platform
@@ -62,10 +73,11 @@ def instructions(
             *about_user_lines(profile),
             # Memories go with the profile; remember() exists only in workers given instruments (web runs).
             *(memory_lines(memories, can_remember=web) if memories is not None else []),
+            *workspace_lines(workspace),
         ])
     return "\n".join([
         f"You are operating a persistent Python/PyAutoGUI desktop session for a {model_label} Jarvis demo harness.",
         "You must use the exec_py tool before you answer.",
         "Observe the current interface with pyautogui.screenshot(), then use PyAutoGUI mouse and keyboard controls. Coordinates refer to the full desktop screenshot.",
-        f"The lab is already open at {current_url}.", *copy.deepcopy(definition["instructions"]),
+        f"The lab is already open at {current_url}.", *copy.deepcopy(definition["instructions"]), *workspace_lines(workspace),
     ])

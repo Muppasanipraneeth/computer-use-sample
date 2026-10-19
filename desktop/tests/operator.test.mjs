@@ -19,7 +19,15 @@ import {
   upsertEnv,
   validateAuthUpdates,
   wireAttachments,
+  wireWorkspace,
 } from "../operator.mjs";
+
+test("a workspace reaches the runner as a trimmed name and instructions, or not at all", () => {
+  const body = startRunBody("any-task", "Draft a reply", "omp:a/b", [], { id: "w1", name: "  Glymph work ", instructions: " Use my work Gmail. ", folder: { path: "/x" } });
+  assert.deepEqual(body.workspace, { name: "Glymph work", instructions: "Use my work Gmail." });
+  assert.equal("workspace" in startRunBody("any-task", "Draft a reply", "omp:a/b", [], { name: "   " }), false);
+  assert.deepEqual(wireWorkspace({ name: "x".repeat(90) }), { name: "x".repeat(80), instructions: "" });
+});
 
 test("auth snapshot reports presence without the key", () => {
   const snapshot = authSnapshot(

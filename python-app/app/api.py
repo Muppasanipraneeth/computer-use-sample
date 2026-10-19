@@ -42,7 +42,7 @@ class OriginGuard:
                 if origin in self.allowed_origins:
                     response_headers.extend([(b"access-control-allow-origin", origin.encode()),
                                              (b"access-control-allow-headers", b"Content-Type,X-Jarvis-Backend,Last-Event-ID"),
-                                             (b"access-control-allow-methods", b"GET,POST,OPTIONS")])
+                                             (b"access-control-allow-methods", b"GET,POST,DELETE,OPTIONS")])
                 message = {**message, "headers": response_headers}
             await send(message)
         if origin and origin not in self.allowed_origins:
@@ -168,6 +168,10 @@ def create_app(*, manager: RunnerManager | None = None, settings: Settings | Non
     @app.get("/api/runs/{run_id}")
     async def detail(run_id: str) -> dict:
         return await manager.get_run_detail(run_id)
+
+    @app.delete("/api/runs/{run_id}")
+    async def delete(run_id: str) -> dict:
+        return await manager.delete_run(run_id)
 
     @app.post("/api/runs/{run_id}/stop")
     async def stop(run_id: str) -> dict:

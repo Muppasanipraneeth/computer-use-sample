@@ -30,6 +30,8 @@
           <nav class="section" aria-labelledby="scenarios-heading">
             <h2 class="section-title" id="scenarios-heading">Workspaces</h2>
             <div class="scenario-list" id="scenario-list" role="listbox" aria-label="Workspace"></div>
+            <div class="scenario-list" id="workspace-list" role="listbox" aria-label="Your workspaces"></div>
+            <button type="button" class="scenario add-workspace" id="add-workspace"><span class="icon scenario-icon" data-icon="plus" data-tone="none"></span><span class="scenario-title">New workspace</span></button>
             <details class="labs" id="labs" hidden>
               <summary class="labs-summary"><span class="icon scenario-icon" data-icon="flask" data-tone="peach"></span><span>Practice labs</span><span class="icon chevron" data-icon="chevron"></span></summary>
               <div class="scenario-list" id="lab-list" role="listbox" aria-label="Practice lab"></div>
@@ -351,6 +353,34 @@
         <section class="card" id="key-cards"></section>
         <p class="sheet-note">Keys are written to the repo's local <code>.env</code>; this window only sees whether one is saved. Restart the runner after saving a key.</p>
         </section>
+      </form>
+    </dialog>
+
+    <dialog class="sheet" id="workspace-dialog">
+      <form method="dialog" class="sheet-body" id="workspace-form">
+        <header class="sheet-head">
+          <div>
+            <h2 id="workspace-dialog-title">New workspace</h2>
+            <p>A place for one kind of work: its chats stay together, and Jarvis follows its instructions in every task.</p>
+          </div>
+          <button type="submit" class="icon-button" aria-label="Close" value="cancel"><span class="icon" data-icon="close"></span></button>
+        </header>
+        <div class="card profile">
+          <label class="field"><span>Name</span><input id="workspace-name" maxlength="80" placeholder="e.g. Glymph work, House hunting, Thesis" required /></label>
+          <label class="field"><span>Instructions for Jarvis (optional)</span><textarea id="workspace-instructions" rows="5" maxlength="4000" placeholder="e.g. Use my work Gmail (praneeth@glymph.ai). Keep answers short. Save files in the project folder."></textarea></label>
+          <div class="field"><span>Folder (optional)</span>
+            <div class="inline-form">
+              <span class="workspace-folder" id="workspace-folder">No folder: Jarvis works anywhere.</span>
+              <button type="button" class="button ghost" id="workspace-folder-pick">Choose…</button>
+              <button type="button" class="button ghost" id="workspace-folder-clear" hidden>Remove</button>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="button ghost danger" id="workspace-delete" hidden>Delete workspace</button>
+            <span class="form-status" id="workspace-status"></span>
+            <button type="button" class="button" id="workspace-save">Create</button>
+          </div>
+        </div>
       </form>
     </dialog>
 

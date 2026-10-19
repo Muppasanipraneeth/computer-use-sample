@@ -40,6 +40,8 @@ class RunExecutionContext:
     screen: RunScreen
     # The runner's shared headless Chromium for local background browsing.
     browser_host: LocalBrowserHost
+    # The user's workspace for this run ({"name", "instructions"}), or None.
+    workspace: dict[str, str] | None = None
 
 
 def browser_profile_directory() -> str:
@@ -216,11 +218,11 @@ async def execute_scenario(context: RunExecutionContext) -> None:
             if desktop_label is None:
                 desktop_instructions = instructions(run["scenarioId"], session.page.url, platform=host, web=web,
                                                     cloud=gateway is not None, apps=apps_gateway is not None, profile=profile,
-                                                    memories=memories)
+                                                    memories=memories, workspace=context.workspace)
             else:
                 desktop_instructions = instructions(run["scenarioId"], session.page.url, desktop_label, platform=host,
                                                     web=web, cloud=gateway is not None, apps=apps_gateway is not None, profile=profile,
-                                                    memories=memories)
+                                                    memories=memories, workspace=context.workspace)
             result = await run_model(desktop_instructions)
             if routine_captures:
                 await context.capture_screenshot(session, "desktop-final")
@@ -258,7 +260,8 @@ async def execute_scenario(context: RunExecutionContext) -> None:
                                   "message": f"Browser navigated to the {lab_id} lab."})
         await context.capture_screenshot(session, f"{lab_id}-loaded")
         model_label = selection.model_id if selection.provider != "openai" else None
-        lab_instructions = instructions(run["scenarioId"], session.page.url) if model_label is None else instructions(run["scenarioId"], session.page.url, model_label)
+        lab_instructions = instructions(run["scenarioId"], session.page.url, workspace=context.workspace) if model_label is None \
+            else instructions(run["scenarioId"], session.page.url, model_label, workspace=context.workspace)
         result = await run_model(lab_instructions)
         await context.capture_screenshot(session, f"{lab_id}-final")
         await hold_browser(context)

@@ -73,6 +73,10 @@ Python also exposes concurrent-run listing and run steering, used by the desktop
 
 These return 409 `run_not_running` unless the run is active. `POST /api/runs` and `steer` accept up to 10 `attachments` (`{"kind": "image" | "folder", "path": <absolute path>}`). Images (PNG, JPEG, GIF, WebP, up to 20 MB) are copied to `data/runs/<run-id>/attachments/`; folders are used in place. The run record lists them under `attachments` and reports `paused`. The model is told each attachment's path, and the first attached image is shown to it on the next turn.
 
+`POST /api/runs` also takes an optional `workspace` (`{"name": 1–80 characters, "instructions": 0–4,000 characters}`, both trimmed; anything longer is 400 `invalid_request`). The model instructions end with a `Workspace "<name>"` section carrying those instructions, after the profile and memories. The run record keeps only `workspace: {"name"}` (null without one; older records omit it), so the desktop app can label runs.
+
+- `DELETE /api/runs/:id` removes a finished run: its `data/runs/<run-id>` folder (record, events, screenshots, attachments, model frames) and `data/workspaces/<run-id>`, returning `{"ok": true, "deleted": <run-id>}`. A run this process is still starting, running or finishing gets 409 `run_not_finished` ("Stop the task before deleting it."); an unknown run 404 `run_not_found`; a malformed id 400 `invalid_request`. Storage cleanup and this route share `remove_path` in `app/storage.py`.
+
 The capabilities response identifies Python, `exec_py`, visible browser mode, and defaults. The shared console is fixed to the backend selected by the root launch command. Its JSON requests carry `X-Jarvis-Backend`; a mismatch receives HTTP 409 before an action is executed.
 
 The start response includes initial run detail. The console combines SSE events with bounded detail polling and can reconnect to an active run after a page refresh. It reconciles a lost Start response through active-run lookup without automatically resending Start.

@@ -64,6 +64,8 @@ class InternalRun:
     ask_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Resolved with the user's answer to detail["run"]["question"]; None when nothing is pending.
     answer: asyncio.Future | None = None
+    # The user's workspace ({"name", "instructions"}) from the start request; the record keeps only its name.
+    workspace: dict[str, str] | None = None
 
 
 SCREEN_WAIT_EVENT = {"type": "run_progress", "level": "warn", "message": "Waiting for the screen…",
@@ -121,6 +123,7 @@ class RunnerManager:
             "maxResponseTurns": request.get("maxResponseTurns", 24), "model": request.get("model", self.settings.default_model),
             "prompt": request["prompt"], "status": "running", "startedAt": timestamp(), "paused": False,
             "attachments": planned, "question": None,
+            "workspace": {"name": request["workspace"]["name"]} if "workspace" in request else None,
         })
         # Reserve admission before the first await, including workspace copying.
         started = asyncio.Event()
@@ -132,7 +135,7 @@ class RunnerManager:
                 "run": record, "scenario": scenario, "workspacePath": str(self.storage.workspace(run_id)),
                 "events": [], "eventStreamUrl": f"/api/runs/{run_id}/events", "replayUrl": f"/api/runs/{run_id}/replay",
             })
-            context = InternalRun(detail=detail)
+            context = InternalRun(detail=detail, workspace=request.get("workspace"))
             self.contexts[run_id] = context
             await self.storage.persist(detail)
             turn_limit = "no turn limit" if record["maxResponseTurns"] is None else f"{record['maxResponseTurns']} turns"
@@ -225,6 +228,18 @@ class RunnerManager:
             return copy.deepcopy(context.detail)
         finally:
             self.active.pop(context.detail["run"]["id"], None)
+
+    async def delete_run(self, run_id: str) -> dict:
+        """Remove a finished run's artifacts and workspace from disk. A run this process is still starting, running or
+        finishing is refused; a record left "running" by an earlier process can be deleted."""
+        validate_run_id(run_id)
+        context = self.contexts.get(run_id)
+        if run_id in self.active or (context is not None and context.detail["run"]["status"] == "running"):
+            raise RunnerCoreError("Stop the task before deleting it.", code="run_not_finished", status_code=409,
+                                  hint="Stop the run, wait for it to finish, then delete it.")
+        await self.storage.delete(run_id)
+        self.contexts.pop(run_id, None)
+        return {"ok": True, "deleted": run_id}
 
     def _running(self, run_id: str) -> InternalRun:
         validate_run_id(run_id)
@@ -378,7 +393,7 @@ class RunnerManager:
             complete_run=lambda **kwargs: self._complete(internal, **kwargs),
             next_turn=lambda: self._next_turn(internal),
             ask=lambda text, **kwargs: self._ask(internal, text, **kwargs),
-            screen=internal.screen, browser_host=self.browser_host,
+            screen=internal.screen, browser_host=self.browser_host, workspace=internal.workspace,
         )
         try:
             await (self.executor or execute_scenario)(context)

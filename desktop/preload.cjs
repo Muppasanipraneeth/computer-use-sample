@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("desktop", {
   getRun: (runId) => ipcRenderer.invoke("run:get", runId),
   liveRuns: () => ipcRenderer.invoke("run:live"),
   stopRun: (runId) => ipcRenderer.invoke("run:stop", runId),
+  deleteRun: (runId) => ipcRenderer.invoke("run:delete", runId),
   answerRun: (runId, questionId, answer) => ipcRenderer.invoke("run:answer", runId, questionId, answer),
   memories: () => ipcRenderer.invoke("memory:list"),
   addMemory: (text) => ipcRenderer.invoke("memory:add", text),

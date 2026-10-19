@@ -96,6 +96,16 @@ def _size(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
+def remove_path(path: Path) -> int:
+    """Delete a file or folder tree; returns the bytes it held. Raises OSError when it can't be removed."""
+    size = _size(path)
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    return size
+
+
 def _finished_at(run_dir: Path) -> float | None:
     """When a run finished (epoch seconds), or None while it is running. A run without a readable record counts as
     finished when its folder was last touched: it can only be a run that failed before or while saving."""
@@ -120,11 +130,7 @@ def prune_storage(data_root: Path, *, keep_runs: int, keep_days: float, active: 
 
     def delete(path: Path, kind: str | None) -> None:
         try:
-            size = _size(path)
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
+            size = remove_path(path)
         except OSError:
             logger.warning("Could not delete %s", path, exc_info=True)
             return
@@ -173,6 +179,25 @@ class RunStorage:
 
     def workspace(self, run_id: str) -> Path:
         return self.root / "workspaces" / validate_run_id(run_id)
+
+    async def delete(self, run_id: str) -> None:
+        """Remove a run's directory (record, events, screenshots, attachments, model frames) and its workspace.
+        Callers make sure the run is not active."""
+        run_dir, workspace = self.run_dir(run_id), self.workspace(run_id)
+
+        def delete() -> None:
+            if not run_dir.is_dir():
+                raise RunnerCoreError(f"Run {run_id} was not found.", code="run_not_found", status_code=404,
+                                      hint="Refresh the run list: the run may already have been deleted.")
+            try:
+                # The workspace first: a run folder left behind still lists the run, so a retry can finish the job.
+                if workspace.exists():
+                    remove_path(workspace)
+                remove_path(run_dir)
+            except OSError as error:
+                raise RunnerCoreError(f"Run {run_id} could not be deleted: {error}", code="run_delete_failed",
+                                      status_code=500, hint="Close any app using the run's files, then try again.") from error
+        await run_in_thread(delete)
 
     async def prepare(self, run_id: str, template: str) -> None:
         def prepare() -> None:

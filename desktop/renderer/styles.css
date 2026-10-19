@@ -141,6 +141,23 @@ kbd {
 [data-tone="peach"] { --tile: var(--tile-peach); }
 [data-tone="sky"] { --tile: var(--tile-sky); }
 .scenario-title { font-weight: var(--weight-medium); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* "New workspace": a dashed, quieter row so it reads as an action, not a place. */
+[data-tone="none"] { --tile: transparent; }
+.add-workspace { width: 100%; border: 0; background: none; color: var(--fg-subtle); font: inherit; text-align: left; cursor: pointer; }
+.add-workspace .scenario-icon { border: 1px dashed var(--border-strong); color: var(--fg-muted); }
+.add-workspace .scenario-title { font-weight: var(--weight-regular); }
+.workspace-list:empty { display: none; }
+/* Rows with a hover action (edit a workspace, delete a chat): the action shows on hover, focus or when selected. */
+.row-wrap { position: relative; display: flex; align-items: center; }
+.row-wrap > :first-child { flex: 1; min-width: 0; padding-right: 30px; }
+.row-action { position: absolute; right: 4px; display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--fg-subtle); opacity: 0; transition: opacity var(--duration-fast); }
+.row-action .icon { width: 14px; height: 14px; }
+.row-wrap:hover .row-action, .row-wrap:focus-within .row-action, .row-action.confirm { opacity: 1; }
+.row-action:hover { background: var(--bg-hover); color: var(--fg); }
+/* Second click deletes: the button turns into a red "Delete" so a stray click never removes a chat. */
+.row-action.confirm { width: auto; padding: 0 var(--space-2); background: var(--danger); color: #fff; font-size: var(--text-xs); font-weight: var(--weight-semibold); }
+.workspace-folder { flex: 1; min-width: 0; align-self: center; font-size: var(--text-sm); color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.button.danger { color: var(--danger); margin-right: auto; }
 
 .labs { margin-top: 1px; }
 .labs-summary {
