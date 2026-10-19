@@ -16,6 +16,22 @@ export function spokenText(transcript) {
   return String(transcript ?? "").replace(/\s+/g, " ").trim().replace(WAKE_PREFIX, "").replace(WAKE_TAIL, "");
 }
 
+const wordKey = (word) => word.toLowerCase().replace(/[^\p{L}\p{N}']/gu, "");
+
+/**
+ * The live words worth showing. Each partial transcript re-reads the whole utterance and keeps rewriting its newest
+ * words ("total" → "tallest Mount Mount" → "tallest mountain", real output), so only the words two transcripts in a
+ * row agree on, from the start, are shown; and shown words are never taken back (the final transcript replaces them).
+ * `shown` and `previous` are word arrays; returns the words to show now.
+ */
+export function settledWords(shown, previous, latest) {
+  let agreed = 0;
+  while (agreed < previous.length && agreed < latest.length && wordKey(previous[agreed]) === wordKey(latest[agreed])) agreed += 1;
+  if (agreed <= shown.length) return shown;
+  for (let at = 0; at < shown.length; at += 1) if (wordKey(shown[at]) !== wordKey(latest[at])) return shown;
+  return [...shown, ...latest.slice(shown.length, agreed)]; // shown words keep their spelling: no flicker of case
+}
+
 export function parseVoiceCommand(transcript) {
   const text = spokenText(transcript);
   const words = text.toLowerCase().replace(/[^a-z0-9' ]+/g, " ").replace(/\s+/g, " ").trim();

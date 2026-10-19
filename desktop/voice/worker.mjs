@@ -10,7 +10,7 @@
 // without the wake phrase. Chromium's echo cancellation removes Jarvis's own voice from the microphone signal.
 import { createRequire } from "node:module";
 
-import { findWakePhrase } from "./commands.mjs";
+import { findWakePhrase, settledWords } from "./commands.mjs";
 
 const require = createRequire(import.meta.url);
 const sherpa = require("sherpa-onnx-node");
@@ -127,7 +127,7 @@ function feedCapture(samples, keep = true) {
 }
 
 function newCapture(vad, source, held, speechSeen, heard) {
-  return { vad, pending: new Float32Array(0), start: total, speechSeen, segments: [], source, held, heard: [heard], heardLength: heard.length, partialAt: total + PARTIAL_SECONDS * RATE, partial: "" };
+  return { vad, pending: new Float32Array(0), start: total, speechSeen, segments: [], source, held, heard: heard.length ? [heard] : [], heardLength: heard.length, partialAt: total + PARTIAL_SECONDS * RATE, previous: [], shown: [] };
 }
 
 function startCapture(from, source, held = false) {
@@ -136,7 +136,9 @@ function startCapture(from, source, held = false) {
   post({ type: "state", state: "hearing", source });
   const seconds = (held ? MAX_HOLD_SECONDS : MAX_COMMAND_SECONDS) + 5;
   const lookback = recall(from);
-  capture = newCapture(new sherpa.Vad(vadConfig, seconds), source, held, false, lookback);
+  // After a wake, the lookback holds the end of "Hey Jarvis": the final transcript's speech segments shed it, but in
+  // the live words "-vis" came out as "12.", "6." or "Is" before the request (real output), so they start after it.
+  capture = newCapture(new sherpa.Vad(vadConfig, seconds), source, held, false, source === "wake" ? new Float32Array(0) : lookback);
   feedCapture(lookback, false);
 }
 
@@ -151,19 +153,21 @@ function joined(parts, length) {
 }
 
 /**
- * The words so far, re-transcribed from everything heard. Moonshine decodes 2 s of speech in ~25 ms, but this worker is
- * single-threaded, so the next decode waits at least four times as long as this one took: a long request never
- * crowds out the audio that decides when it ends.
+ * The words so far, re-transcribed from everything heard, posted once they've settled (settledWords). Moonshine decodes
+ * 2 s of speech in ~25 ms, but this worker is single-threaded, so the next decode waits at least four times as long as
+ * this one took: a long request never crowds out the audio that decides when it ends.
  */
 function postPartial() {
-  if (!capture.speechSeen || total < capture.partialAt) return;
+  if (!capture.speechSeen || total < capture.partialAt || capture.heardLength === 0) return;
   const started = performance.now();
-  const text = transcribe(joined(capture.heard, capture.heardLength));
+  const words = transcribe(joined(capture.heard, capture.heardLength)).split(/\s+/).filter(Boolean);
   const seconds = (performance.now() - started) / 1000;
   capture.partialAt = total + Math.round(Math.max(PARTIAL_SECONDS, seconds * 4) * RATE);
-  if (!text || text === capture.partial) return;
-  capture.partial = text;
-  post({ type: "partial", text, source: capture.source });
+  const shown = settledWords(capture.shown, capture.previous, words);
+  capture.previous = words;
+  if (shown === capture.shown) return;
+  capture.shown = shown;
+  post({ type: "partial", text: shown.join(" "), source: capture.source });
 }
 
 function transcribe(speech) {

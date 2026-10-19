@@ -1,7 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { findWakePhrase, parseVoiceCommand, spokenText } from "../voice/commands.mjs";
+import { findWakePhrase, parseVoiceCommand, settledWords, spokenText } from "../voice/commands.mjs";
+
+/** Feeds partial transcripts through settledWords, as the worker does, and returns what was shown after each. */
+function shownOver(partials) {
+  let shown = [];
+  let previous = [];
+  return partials.map((text) => {
+    const words = text.split(" ");
+    shown = settledWords(shown, previous, words);
+    previous = words;
+    return shown.join(" ");
+  });
+}
+
+test("live words show only what two transcripts in a row agree on, and never go back", () => {
+  // Real partials for "tell me a short joke about computers and coffee", without the wake-phrase lookback.
+  const shown = shownOver(["Tell me a short story", "Tell me a short joke about the", "Tell me a short joke about computer science.", "Tell me a short joke about computers and", "Tell me a short joke about computers and coffee."]);
+  assert.deepEqual(shown, ["", "Tell me a short", "Tell me a short joke about", "Tell me a short joke about", "Tell me a short joke about computers and"]);
+  for (let at = 1; at < shown.length; at += 1) assert.ok(shown[at].startsWith(shown[at - 1]), `"${shown[at]}" takes back "${shown[at - 1]}"`);
+  assert.deepEqual(shownOver(["What is the", "what is the tallest", "What is the tallest mountain."]), ["", "what is the", "what is the tallest"], "a change of case or punctuation neither counts nor shows");
+});
 
 test("the live words drop leftover wake-phrase audio but keep the user's own first word", () => {
   assert.equal(spokenText("Hey Jarvis, open"), "open");

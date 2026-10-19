@@ -775,6 +775,9 @@ async function startVoice(owner) {
       } else if (message.type === "state") {
         workerState = message.state;
         syncDucking();
+        // A new request starts with no words yet ("Listening…"), not the last one's. Reset here, in the same order as
+        // the words that follow: the window's relay of this state can arrive after them and used to wipe them.
+        if (message.state === "hearing") avatar?.voice({ heard: "" });
         send("voice:state", message);
       } else if (message.type === "partial") {
         // The words so far while the user talks: in the message box and under the floating face.

@@ -237,8 +237,6 @@ export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, 
      * (heard, from the speech worker).
      */
     voice({ state, text, outcome, heard } = {}) {
-      // A new request starts with no words yet ("Listening…"), not the last one's.
-      if (state === "hearing" && face.voice !== "hearing") face.heard = "";
       if (typeof state === "string") face.voice = state;
       if (typeof heard === "string") face.heard = heard.replace(/\s+/g, " ").trim().slice(0, 240);
       if (typeof text === "string" && text) {
