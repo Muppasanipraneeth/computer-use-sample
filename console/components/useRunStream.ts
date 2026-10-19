@@ -19,7 +19,7 @@ import {
   type RunEvent,
   type ScenarioManifest,
   type ScenarioResetResponse,
-} from "@cua-sample/contracts";
+} from "@jarvis/contracts";
 
 import {
   createManualLog,
@@ -146,6 +146,7 @@ export function useRunStream({
     openai: initialModel.provider === "openai" ? initialModel.modelId : configuredModel.provider === "openai" ? configuredModel.modelId : DEFAULT_MODEL,
     anthropic: initialModel.provider === "anthropic" ? initialModel.modelId : DEFAULT_ANTHROPIC_MODEL,
     compatible: initialModel.provider === "compatible" ? initialModel.modelId : "",
+    omp: initialModel.provider === "omp" ? initialModel.modelId : "",
   });
   const modelId = modelIds[modelProvider];
   const [browserMode, setBrowserMode] = useState<BrowserMode>(initialRun?.run.browserMode ?? capabilities?.defaults.browserMode ?? "headless");
@@ -236,7 +237,7 @@ export function useRunStream({
       requestJson(
         `${runnerBaseUrl}/api/runs/${runId}`,
         runDetailSchema,
-        { signal, headers: { "X-CUA-Backend": expectedBackend } },
+        { signal, headers: { "X-Jarvis-Backend": expectedBackend } },
         createFallbackIssue(
           `Run detail request failed for ${runId}.`,
           "Refresh the page or start a new run.",
@@ -506,7 +507,7 @@ export function useRunStream({
     setModelProvider(selectedModel.provider);
     setModelIds((current) => ({ ...current, [selectedModel.provider]: selectedModel.modelId }));
     setBrowserMode(detail.run.browserMode);
-    setMaxResponseTurns(detail.run.maxResponseTurns);
+    setMaxResponseTurns(detail.run.maxResponseTurns ?? defaultMaxResponseTurns);
     setPrompt(detail.run.prompt);
     setWorkspaceState(null);
     setStartRecovery(null);
@@ -520,7 +521,7 @@ export function useRunStream({
       const detail = await requestJson(
         `${runnerBaseUrl}/api/runs/active`,
         runDetailSchema.nullable(),
-        { signal: request.controller.signal, headers: { "X-CUA-Backend": expectedBackend } },
+        { signal: request.controller.signal, headers: { "X-Jarvis-Backend": expectedBackend } },
         createFallbackIssue("The runner's current state could not be checked."),
       );
       if (!isCurrentAction(request)) return;
@@ -586,7 +587,7 @@ export function useRunStream({
           }),
           headers: {
             "Content-Type": "application/json",
-            "X-CUA-Backend": expectedBackend,
+            "X-Jarvis-Backend": expectedBackend,
           },
           method: "POST",
           signal: request.controller.signal,
@@ -607,7 +608,8 @@ export function useRunStream({
     } catch (error) {
       if (!isCurrentAction(request)) return;
       const definitiveRejection = error instanceof RunnerApiError &&
-        (error.issue.code === "backend_mismatch" || error.issue.code === "desktop_cleanup_failed");
+        (error.issue.code === "backend_mismatch" || error.issue.code === "desktop_cleanup_failed" ||
+          error.issue.code === "run_limit_reached");
       const ambiguous = !definitiveRejection && (!(error instanceof RunnerApiError) ||
         error.status === 0 || error.status === 408 || error.status === 409 || error.status >= 500);
       if (ambiguous) {
@@ -649,7 +651,7 @@ export function useRunStream({
         runDetailSchema,
         {
           method: "POST",
-          headers: { "X-CUA-Backend": expectedBackend },
+          headers: { "X-Jarvis-Backend": expectedBackend },
           signal: request.controller.signal,
         },
         createFallbackIssue(
@@ -702,7 +704,7 @@ export function useRunStream({
         scenarioResetResponseSchema,
         {
           method: "POST",
-          headers: { "X-CUA-Backend": expectedBackend },
+          headers: { "X-Jarvis-Backend": expectedBackend },
           signal: request.controller.signal,
         },
         createFallbackIssue(

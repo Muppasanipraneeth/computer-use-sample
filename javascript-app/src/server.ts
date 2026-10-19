@@ -16,7 +16,7 @@ import {
   startRunRequestSchema,
   startRunResponseSchema,
   type RunEvent,
-} from "@cua-sample/contracts";
+} from "@jarvis/contracts";
 import { RunnerCoreError, toRunnerErrorResponse } from "./errors.js";
 import { listOmpModels } from "./omp-client.js";
 import { RunnerManager } from "./runner-manager.js";
@@ -52,7 +52,7 @@ function writeSseEvent(reply: FastifyReply, payload: unknown) {
 }
 
 export function createServer(options: CreateServerOptions = {}) {
-  const instanceId = process.env.CUA_INSTANCE_ID ?? randomUUID();
+  const instanceId = process.env.JARVIS_INSTANCE_ID ?? randomUUID();
   const resolvedDataRoot = resolve(options.dataRoot ?? defaultDataRoot);
   const manager = options.manager ?? new RunnerManager({ dataRoot: resolvedDataRoot });
   const app = Fastify({ logger: false });
@@ -67,7 +67,7 @@ export function createServer(options: CreateServerOptions = {}) {
   });
   const allowedOrigins = new Set([
     ...defaultAllowedOrigins,
-    ...(options.allowedOrigins ?? process.env.CUA_ALLOWED_ORIGINS?.split(",") ?? [])
+    ...(options.allowedOrigins ?? process.env.JARVIS_ALLOWED_ORIGINS?.split(",") ?? [])
       .map((origin) => origin.trim())
       .filter(Boolean),
   ]);
@@ -78,10 +78,10 @@ export function createServer(options: CreateServerOptions = {}) {
       return reply.code(403).send({
         code: "origin_not_allowed",
         error: "This origin is not allowed to access the runner.",
-        hint: "Use the local operator console or configure CUA_ALLOWED_ORIGINS.",
+        hint: "Use the local operator console or configure JARVIS_ALLOWED_ORIGINS.",
       });
     }
-    const expectedBackend = request.headers["x-cua-backend"];
+    const expectedBackend = request.headers["x-jarvis-backend"];
     if (expectedBackend !== undefined && expectedBackend !== "javascript") {
       return reply.code(409).send({
         code: "backend_mismatch",
@@ -96,7 +96,7 @@ export function createServer(options: CreateServerOptions = {}) {
     const origin = request.headers.origin;
     if (origin && allowedOrigins.has(origin)) {
       reply.header("Access-Control-Allow-Origin", origin);
-      reply.header("Access-Control-Allow-Headers", "content-type, last-event-id, x-cua-backend");
+      reply.header("Access-Control-Allow-Headers", "content-type, last-event-id, x-jarvis-backend");
       reply.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     }
     return payload;
@@ -163,7 +163,7 @@ export function createServer(options: CreateServerOptions = {}) {
     browserModes: ["headless", "headful"],
     defaults: {
       browserMode: "headless",
-      model: process.env.CUA_DEFAULT_MODEL ?? DEFAULT_MODEL,
+      model: process.env.JARVIS_DEFAULT_MODEL ?? DEFAULT_MODEL,
       maxResponseTurns: 24,
     },
   }));

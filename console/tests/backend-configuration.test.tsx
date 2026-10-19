@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RunDetail, RunEvent } from "@cua-sample/contracts";
+import type { RunDetail, RunEvent } from "@jarvis/contracts";
 
 import { mapRunEventToActivity } from "../components/helpers";
 import { OperatorConsole } from "../components/OperatorConsole";
@@ -38,7 +38,7 @@ describe("launch-selected backend", () => {
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Start Run" })); });
     const [url, init] = vi.mocked(fetch).mock.calls[0]!;
     expect(url).toBe(`${runnerBaseUrl}/api/runs`);
-    expect(init?.headers).toMatchObject({ "X-CUA-Backend": "python" });
+    expect(init?.headers).toMatchObject({ "X-Jarvis-Backend": "python" });
     const payload = JSON.parse(String(init?.body));
     expect(payload).toMatchObject({ browserMode: "headful", model: "python-model", maxResponseTurns: 18 });
     expect(payload).not.toHaveProperty("verificationEnabled");
@@ -71,11 +71,20 @@ describe("launch-selected backend", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("reports the concurrent run limit as a definitive Start rejection", async () => {
+    vi.mocked(fetch).mockResolvedValue(response({ code: "run_limit_reached", error: "Jarvis is already doing 3 tasks. Stop one or wait for it to finish." }, 409));
+    const hook = renderHook(() => useRunStream({ ...pythonBackendProps, initialRunnerIssue: null, runnerBaseUrl, scenarios: [scenario] }));
+    await act(async () => { await hook.result.current.handleStartRun(); });
+    expect(hook.result.current.currentIssue?.code).toBe("run_limit_reached");
+    expect(hook.result.current.startRecovery).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["stop", "reset"] as const)("identifies the selected backend on %s and discards stale run state on mismatch", async (action) => {
     vi.mocked(fetch).mockResolvedValue(response({ code: "backend_mismatch", error: "The selected backend changed." }, 409));
     const hook = renderHook(() => useRunStream({ ...pythonBackendProps, initialRun: detail, initialRunnerIssue: null, runnerBaseUrl, scenarios: [scenario] }));
     await act(async () => { await (action === "stop" ? hook.result.current.handleStopRun() : hook.result.current.handleResetWorkspace()); });
-    expect(vi.mocked(fetch).mock.calls[0]![1]?.headers).toMatchObject({ "X-CUA-Backend": "python" });
+    expect(vi.mocked(fetch).mock.calls[0]![1]?.headers).toMatchObject({ "X-Jarvis-Backend": "python" });
     expect(hook.result.current.selectedRun).toBeNull();
     expect(hook.result.current.currentIssue?.code).toBe("backend_mismatch");
     expect(fetch).toHaveBeenCalledTimes(1);

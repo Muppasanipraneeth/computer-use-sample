@@ -3,7 +3,7 @@ import { scenarioFixture } from "./fixtures";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { RunDetail, RunEvent } from "@cua-sample/contracts";
+import type { RunDetail, RunEvent } from "@jarvis/contracts";
 
 import { useRunStream } from "../components/useRunStream";
 

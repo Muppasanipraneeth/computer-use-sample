@@ -1,6 +1,6 @@
 "use client";
 
-import { DEFAULT_MODEL_DISPLAY_NAME } from "@cua-sample/contracts";
+import { DEFAULT_MODEL_DISPLAY_NAME } from "@jarvis/contracts";
 
 type RunSummaryProps = {
   backendId: "javascript" | "python";
@@ -25,7 +25,7 @@ export function ConsoleTopbar({
           <span>{DEFAULT_MODEL_DISPLAY_NAME}</span>
         </div>
         <div className="brandCopy">
-          <h1>{DEFAULT_MODEL_DISPLAY_NAME} CUA Sample App</h1>
+          <h1>Jarvis</h1>
           <p>
             <span className="stackLabel">{backendId === "python" ? "Python / PyAutoGUI" : "JavaScript / Playwright"}</span>
             <span className="brandContext"> · {topbarSubtitle}</span>

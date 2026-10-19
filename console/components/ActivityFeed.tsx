@@ -2,7 +2,7 @@
 
 import type { RefObject } from "react";
 
-import type { BrowserScreenshotArtifact } from "@cua-sample/contracts";
+import type { BrowserScreenshotArtifact } from "@jarvis/contracts";
 
 import { activityFamilyLabel } from "./helpers";
 import type { ActivityItem } from "./types";

@@ -6,7 +6,7 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
-  transpilePackages: ["@cua-sample/contracts"],
+  transpilePackages: ["@jarvis/contracts"],
   outputFileTracingRoot: fileURLToPath(new URL("..", import.meta.url)),
 };
 

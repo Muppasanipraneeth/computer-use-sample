@@ -1,4 +1,4 @@
-import type { BrowserMode } from "@cua-sample/contracts";
+import type { BrowserMode } from "@jarvis/contracts";
 
 export type JavaScriptOutput =
   | { type: "input_text"; text: string }

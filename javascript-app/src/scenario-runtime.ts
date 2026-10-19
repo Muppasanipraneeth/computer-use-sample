@@ -7,7 +7,7 @@ import {
   type RunDetail,
   type RunEventLevel,
   type RunEventType,
-} from "@cua-sample/contracts";
+} from "@jarvis/contracts";
 
 import { RunnerCoreError } from "./errors.js";
 import { startWorkspaceLabServer } from "./workspace-lab-server.js";

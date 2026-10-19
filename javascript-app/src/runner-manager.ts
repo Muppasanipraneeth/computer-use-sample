@@ -30,7 +30,7 @@ import {
   type ReplayBundle,
   type ScenarioResetResponse,
   type StartRunRequest,
-} from "@cua-sample/contracts";
+} from "@jarvis/contracts";
 import { getScenarioById } from "./lab-catalog.js";
 
 import { createDefaultRunExecutor } from "./executor-registry.js";
@@ -62,7 +62,7 @@ type RunnerManagerOptions = {
   dataRoot: string;
   executorFactory?: (detail: RunDetail) => RunExecutor;
 };
-const defaultRunModel = process.env.CUA_DEFAULT_MODEL ?? DEFAULT_MODEL;
+const defaultRunModel = process.env.JARVIS_DEFAULT_MODEL ?? DEFAULT_MODEL;
 const defaultMaxResponseTurns = 24;
 
 function sleep(ms: number) {
@@ -103,17 +103,13 @@ export class RunnerManager {
 
     const activeRun = this.getActiveRun();
 
+    // This backend runs one task at a time; the error matches the Python runner's concurrent-run limit.
     if (this.startingRun || activeRun) {
-      throw new RunnerCoreError(
-        activeRun
-          ? `Run ${activeRun.detail.run.id} is already active. Stop it before starting another run.`
-          : "A run is already starting. Wait for it before starting another run.",
-        {
-          code: "run_already_active",
-          hint: "Stop the active run before starting another scenario.",
-          statusCode: 409,
-        },
-      );
+      throw new RunnerCoreError("Jarvis is already doing 1 task. Stop one or wait for it to finish.", {
+        code: "run_limit_reached",
+        hint: "Stop the running task before starting another one.",
+        statusCode: 409,
+      });
     }
 
     const runId = randomUUID();
@@ -124,7 +120,7 @@ export class RunnerManager {
       browserMode: request.browserMode ?? "headless",
       id: runId,
       labId: scenario.labId,
-      maxResponseTurns: request.maxResponseTurns ?? defaultMaxResponseTurns,
+      maxResponseTurns: request.maxResponseTurns === undefined ? defaultMaxResponseTurns : request.maxResponseTurns,
       model: request.model ?? defaultRunModel,
       prompt: request.prompt,
       scenarioId: scenario.id,
@@ -161,7 +157,7 @@ export class RunnerManager {
       await this.persistContext(context);
 
       await this.emitEvent(context, {
-        detail: `${scenario.title} · ${request.browserMode ?? "headless"} · ${runRecord.maxResponseTurns} turns`,
+        detail: `${scenario.title} · ${request.browserMode ?? "headless"} · ${runRecord.maxResponseTurns === null ? "no turn limit" : `${runRecord.maxResponseTurns} turns`}`,
         level: "ok",
         message: `Run ${runId} started.`,
         type: "run_started",

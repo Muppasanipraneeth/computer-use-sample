@@ -12,9 +12,9 @@ Both choices use [http://127.0.0.1:3000](http://127.0.0.1:3000). The subheader s
 
 ## Configuration and startup
 
-The root launcher sets `CUA_BACKEND=javascript|python` and one `RUNNER_BASE_URL`, defaulting to JavaScript on **4001** or Python on **4041**. It honors `HOST`/`PORT` and an explicit `RUNNER_BASE_URL` override. The root `.env` and launching shell configure model defaults; the console reads them through `/api/capabilities`.
+The root launcher sets `JARVIS_BACKEND=javascript|python` and one `RUNNER_BASE_URL`, defaulting to JavaScript on **4001** or Python on **4041**. It honors `HOST`/`PORT` and an explicit `RUNNER_BASE_URL` override. The root `.env` and launching shell configure model defaults; the console reads them through `/api/capabilities`.
 
-[`app/page.tsx`](app/page.tsx) checks capabilities against the expected backend, then loads its scenario catalog and active run. Failed discovery keeps Start unavailable. JavaScript exposes headless/visible browser controls; Python shows a fixed visible desktop. The console sends `X-CUA-Backend` on JSON requests; the backend rejects mismatches before performing actions.
+[`app/page.tsx`](app/page.tsx) checks capabilities against the expected backend, then loads its scenario catalog and active run. Failed discovery keeps Start unavailable. JavaScript exposes headless/visible browser controls; Python shows a fixed visible desktop. The console sends `X-Jarvis-Backend` on JSON requests; the backend rejects mismatches before performing actions.
 
 The Next.js routes and global styles live in `app/`. The interactive controls and run state live in `components/`; `tests/` covers the console and request recovery.
 
@@ -24,7 +24,7 @@ The Next.js routes and global styles live in `app/`. The interactive controls an
 
 [`ScreenshotPane.tsx`](components/ScreenshotPane.tsx) reviews captured frames while preserving a pinned selection. It displays screenshot dimensions when available. [`helpers.ts`](components/helpers.ts) renders both `exec_js` and `exec_py` activity.
 
-Use **Show thumbnails** and the timeline to inspect earlier screenshots, and **Replay JSON** to open the recorded trace. **Run finished** reports normal execution and cleanup; it does not certify that the model accomplished the task. Inspect the screenshots and model response to judge the result. Advanced settings contain browser mode and turn budget.
+Use **Show thumbnails** and the timeline to inspect earlier screenshots, and **Replay JSON** to open the recorded trace. **Run finished** reports normal execution and cleanup; it does not certify that the model accomplished the task. Inspect the screenshots and model response to judge the result. Advanced settings contain browser mode and turn budget (1–50). Runs started from the desktop app have no turn limit (`maxResponseTurns: null`).
 
 Shared request/event/replay types come from [`contracts`](../contracts/). The console contains no model-request loop or execution runtime.
 
@@ -35,8 +35,8 @@ Development uses `.next-dev`; build, start, and type generation use `.next`, so 
 From the repository root:
 
 ```bash
-pnpm --filter @cua-sample/console test
-pnpm --filter @cua-sample/console typecheck
+pnpm --filter @jarvis/console test
+pnpm --filter @jarvis/console typecheck
 pnpm build
 pnpm start:js
 ```

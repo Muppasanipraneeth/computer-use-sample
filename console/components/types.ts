@@ -3,7 +3,7 @@ import type {
   RunDetail,
   RunEventLevel,
   ScenarioManifest,
-} from "@cua-sample/contracts";
+} from "@jarvis/contracts";
 
 export type OperatorConsoleProps = {
   capabilities: BackendCapabilities | null;

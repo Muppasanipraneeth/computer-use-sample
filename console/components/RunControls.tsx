@@ -1,13 +1,13 @@
 "use client";
 
-import { DEFAULT_MODEL_DISPLAY_NAME, type ModelProvider } from "@cua-sample/contracts";
+import { DEFAULT_MODEL_DISPLAY_NAME, type ModelProvider } from "@jarvis/contracts";
 
 import type {
   BackendCapabilities,
   BrowserMode,
   ResponseTurnBudget,
   ScenarioManifest,
-} from "@cua-sample/contracts";
+} from "@jarvis/contracts";
 
 import {
   browserHelpText,

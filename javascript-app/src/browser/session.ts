@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 
-import { type BrowserMode, type BrowserViewport } from "@cua-sample/contracts";
+import { type BrowserMode, type BrowserViewport } from "@jarvis/contracts";
 
 export const defaultViewport: BrowserViewport = {
   height: 900,

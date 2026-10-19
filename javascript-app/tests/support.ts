@@ -1,5 +1,5 @@
 import { expect, vi } from "vitest";
-import type { RunRecord } from "@cua-sample/contracts";
+import type { RunRecord } from "@jarvis/contracts";
 import type { RunnerManager } from "../src/runner-manager.js";
 
 export function waitForRunStatus(manager: RunnerManager, runId: string, status: RunRecord["status"]) {

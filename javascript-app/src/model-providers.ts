@@ -1,4 +1,4 @@
-import { parseModelSelection, type ModelProvider } from "@cua-sample/contracts";
+import { parseModelSelection, type ModelProvider } from "@jarvis/contracts";
 
 import type { JavaScriptSession } from "./browser/javascript-process.js";
 import { RunnerCoreError } from "./errors.js";
@@ -276,17 +276,17 @@ export class ExternalCodeModel {
       this.key = key;
       return;
     }
-    const baseUrl = process.env.CUA_COMPATIBLE_BASE_URL?.trim().replace(/\/$/, "");
-    const key = process.env.CUA_COMPATIBLE_API_KEY?.trim();
+    const baseUrl = process.env.JARVIS_COMPATIBLE_BASE_URL?.trim().replace(/\/$/, "");
+    const key = process.env.JARVIS_COMPATIBLE_API_KEY?.trim();
     if (!baseUrl || !key) {
-      throw new RunnerCoreError("CUA_COMPATIBLE_BASE_URL and CUA_COMPATIBLE_API_KEY are required for this provider.", {
+      throw new RunnerCoreError("JARVIS_COMPATIBLE_BASE_URL and JARVIS_COMPATIBLE_API_KEY are required for this provider.", {
         code: "missing_api_key",
         hint: "Set both variables in the root .env. The base URL should end in /v1 for OpenAI-compatible servers.",
         statusCode: 400,
       });
     }
     if (!baseUrl.startsWith("https://") && !baseUrl.startsWith("http://")) {
-      throw new RunnerCoreError("CUA_COMPATIBLE_BASE_URL must start with http:// or https://.", {
+      throw new RunnerCoreError("JARVIS_COMPATIBLE_BASE_URL must start with http:// or https://.", {
         code: "invalid_configuration",
         statusCode: 400,
       });
@@ -334,14 +334,14 @@ function assertActive(signal: AbortSignal) {
 export async function runExternalCodeLoop(input: {
   context: RunExecutionContext;
   instructions: string;
-  maxResponseTurns: number;
+  maxResponseTurns: number | null;
   model: ExternalCodeModel;
   session: JavaScriptSession;
 }) {
   const prompt = input.context.detail.run.prompt.trim();
   const turns: TurnRecord[] = [];
   let finalAssistantMessage: string | undefined;
-  for (let turn = 1; turn <= input.maxResponseTurns; turn += 1) {
+  for (let turn = 1; turn <= (input.maxResponseTurns ?? Infinity); turn += 1) {
     assertActive(input.context.signal);
     const classified = await input.model.complete({
       instructions: input.instructions,

@@ -6,7 +6,7 @@ import type {
   BrowserScreenshotArtifact,
   BrowserState,
   RunDetail,
-} from "@cua-sample/contracts";
+} from "@jarvis/contracts";
 
 import { formatClock, humanizeToken } from "./helpers";
 

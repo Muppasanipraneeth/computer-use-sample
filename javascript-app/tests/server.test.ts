@@ -12,7 +12,7 @@ import {
   scenariosResponseSchema,
   startRunResponseSchema,
   type RunEvent,
-} from "@cua-sample/contracts";
+} from "@jarvis/contracts";
 
 import { RunnerCoreError } from "../src/errors.js";
 import { RunnerManager } from "../src/runner-manager.js";
@@ -35,7 +35,7 @@ vi.mock("../src/lab-catalog.js", () => {
   return { listScenarios: () => [scenario()], getScenarioById: (id: string) => id === "fixture-scenario" ? scenario() : undefined };
 });
 beforeAll(async () => {
-  fixture.workspaceTemplatePath = await mkdtemp(join(tmpdir(), "cua-http-template-"));
+  fixture.workspaceTemplatePath = await mkdtemp(join(tmpdir(), "jarvis-http-template-"));
   await writeFile(join(fixture.workspaceTemplatePath, "index.html"), "<!doctype html><title>Fixture</title>");
 });
 afterAll(() => rm(fixture.workspaceTemplatePath, { recursive: true, force: true }));
@@ -55,7 +55,7 @@ describe("runner server", () => {
   });
 
   it.each([1, 2, 99])("returns HTTP 409 for replay version %s without changing saved files", async version => {
-    const dataRoot = await mkdtemp(join(tmpdir(), "cua-unsupported-replay-"));
+    const dataRoot = await mkdtemp(join(tmpdir(), "jarvis-unsupported-replay-"));
     const path = join(dataRoot, "runs", "historical-run", "replay.json");
     const original = JSON.stringify({ version, run: { id: "historical-run" }, preserved: "untouched" });
     await mkdir(join(dataRoot, "runs", "historical-run"), { recursive: true });
@@ -91,7 +91,7 @@ describe("runner server", () => {
   });
 
   it("starts, retrieves, stops, and resets scenarios", async () => {
-    const dataRoot = await mkdtemp(join(tmpdir(), "cua-sample-runner-server-"));
+    const dataRoot = await mkdtemp(join(tmpdir(), "jarvis-runner-server-"));
     const app = createServer({
       dataRoot,
       manager: new RunnerManager({
@@ -319,7 +319,7 @@ describe("runner request boundaries", () => {
   });
 
   it("rejects encoded traversal before accessing run artifacts", async () => {
-    const root = await mkdtemp(join(tmpdir(), "cua-boundary-test-"));
+    const root = await mkdtemp(join(tmpdir(), "jarvis-boundary-test-"));
     const dataRoot = join(root, "data");
     await mkdir(join(root, "outside", "screenshots"), { recursive: true });
     await writeFile(join(root, "outside", "screenshots", "marker.txt"), "outside data root");
@@ -416,7 +416,7 @@ describe("runner request boundaries", () => {
 
 
 it("waits for active executor teardown when the server closes", async () => {
-  const dataRoot = await mkdtemp(join(tmpdir(), "cua-shutdown-test-"));
+  const dataRoot = await mkdtemp(join(tmpdir(), "jarvis-shutdown-test-"));
   let aborted = false;
   let finished = false;
   let releaseTeardown!: () => void;

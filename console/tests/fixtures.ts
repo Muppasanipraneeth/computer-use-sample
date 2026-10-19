@@ -1,4 +1,4 @@
-import type { BackendCapabilities, ScenarioManifest } from "@cua-sample/contracts";
+import type { BackendCapabilities, ScenarioManifest } from "@jarvis/contracts";
 
 export const scenarioFixture: ScenarioManifest = {
   id: "demo-scenario", labId: "kanban", category: "productivity",

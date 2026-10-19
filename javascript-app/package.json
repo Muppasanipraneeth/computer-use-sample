@@ -1,5 +1,5 @@
 {
-  "name": "@cua-sample/runner",
+  "name": "@jarvis/runner",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cua-sample/contracts": "workspace:*",
+    "@jarvis/contracts": "workspace:*",
     "fastify": "^5.12.1",
     "openai": "^6.25.0",
     "playwright": "^1.55.0"

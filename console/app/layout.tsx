@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { DEFAULT_MODEL_DISPLAY_NAME } from "@cua-sample/contracts";
+import { DEFAULT_MODEL_DISPLAY_NAME } from "@jarvis/contracts";
 
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: `${DEFAULT_MODEL_DISPLAY_NAME} CUA Sample App`,
+  title: "Jarvis",
   description:
-    `Scenario-driven sample app for ${DEFAULT_MODEL_DISPLAY_NAME} computer-use workflows.`,
+    `Jarvis: scenario-driven ${DEFAULT_MODEL_DISPLAY_NAME} computer-use workflows.`,
 };
 
 type RootLayoutProps = {

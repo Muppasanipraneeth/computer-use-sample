@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL_DISPLAY_NAME, parseModelSelection, type RunDetail } from "@cua-sample/contracts";
+import { DEFAULT_MODEL_DISPLAY_NAME, parseModelSelection, type RunDetail } from "@jarvis/contracts";
 
 import { RunnerCoreError } from "./errors.js";
 import { createExternalCodeModel, runExternalCodeLoop } from "./model-providers.js";
@@ -51,7 +51,7 @@ export function createDefaultRunExecutor(detail: RunDetail): RunExecutor {
         runner: async ({ labUrl, session }) => {
           const harnessName = selection.provider === "openai" ? DEFAULT_MODEL_DISPLAY_NAME : selection.modelId;
           const instructions = [
-            `You are operating a persistent Playwright browser session for a ${harnessName} CUA demo harness.`,
+            `You are operating a persistent Playwright browser session for a ${harnessName} Jarvis demo harness.`,
             "You must use the exec_js tool before you answer.",
             ...(lab.id === "paint" ? ["Observe the interface with display((await page.screenshot()).toString('base64')), then use Playwright locators, page.mouse, and page.keyboard to operate the visible controls. Mouse coordinates refer to the page screenshot."] : []),
             `The lab is already open at ${labUrl}.`,

@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { OmpModelInfo, OmpModelsResponse } from "@cua-sample/contracts";
+import type { OmpModelInfo, OmpModelsResponse } from "@jarvis/contracts";
 
 import type { JavaScriptSession } from "./browser/javascript-process.js";
 import { RunnerCoreError } from "./errors.js";
@@ -221,7 +221,7 @@ export async function completeOmp(input: {
 }) {
   assertOmpSelector(input.selector);
   const binary = resolveOmpBinary();
-  const directory = await mkdtemp(join(tmpdir(), "cua-omp-"));
+  const directory = await mkdtemp(join(tmpdir(), "jarvis-omp-"));
   const promptPath = join(directory, "prompt.md");
   try {
     await writeFile(promptPath, input.prompt);

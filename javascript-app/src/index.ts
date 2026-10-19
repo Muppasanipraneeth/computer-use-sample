@@ -26,7 +26,7 @@ function beginShutdown(exitCode: number) {
 for (const [signal, exitCode] of Object.entries(signalExitCodes)) {
   process.on(signal, () => beginShutdown(exitCode));
 }
-if (process.env.CUA_MANAGED_LAUNCH === "1") {
+if (process.env.JARVIS_MANAGED_LAUNCH === "1") {
   // The launcher closes its private stdin pipe to request graceful cleanup.
   process.stdin.once("end", () => beginShutdown(0));
   process.stdin.resume();

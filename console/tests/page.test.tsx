@@ -1,6 +1,6 @@
 import { javascriptCapabilities, pythonCapabilities, scenarioFixture } from "./fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RunDetail } from "@cua-sample/contracts";
+import type { RunDetail } from "@jarvis/contracts";
 
 import HomePage from "../app/page";
 
@@ -15,15 +15,15 @@ const active: RunDetail = {
 const response = (payload: unknown, status = 200) => ({ ok: status < 400, status, json: async () => payload }) as Response;
 
 describe("console startup", () => {
-  beforeEach(() => { vi.stubEnv("CUA_BACKEND", "javascript"); vi.stubEnv("RUNNER_BASE_URL", "http://127.0.0.1:4001"); vi.stubGlobal("fetch", vi.fn()); });
+  beforeEach(() => { vi.stubEnv("JARVIS_BACKEND", "javascript"); vi.stubEnv("RUNNER_BASE_URL", "http://127.0.0.1:4001"); vi.stubGlobal("fetch", vi.fn()); });
   afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
   it("loads Python capabilities from its configured backend without a selector", async () => {
-    vi.stubEnv("CUA_BACKEND", "python");
+    vi.stubEnv("JARVIS_BACKEND", "python");
     vi.stubEnv("RUNNER_BASE_URL", "http://127.0.0.1:4041");
     vi.mocked(fetch).mockImplementation(async (url) => response(String(url).endsWith("/capabilities") ? pythonCapabilities : String(url).endsWith("/active") ? null : [scenario]));
     expect((await HomePage()).props).toMatchObject({ expectedBackend: "python", capabilities: pythonCapabilities, runnerBaseUrl: "http://127.0.0.1:4041", initialRunnerIssue: null });
-    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:4041/api/scenarios", expect.objectContaining({ headers: { "X-CUA-Backend": "python" } }));
+    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:4041/api/scenarios", expect.objectContaining({ headers: { "X-Jarvis-Backend": "python" } }));
   });
 
   it("rejects a backend mismatch before hydrating any run state", async () => {
@@ -41,7 +41,7 @@ describe("console startup", () => {
   });
 
   it("reports invalid backend launch configuration", async () => {
-    vi.stubEnv("CUA_BACKEND", "unknown");
+    vi.stubEnv("JARVIS_BACKEND", "unknown");
     expect((await HomePage()).props.initialRunnerIssue).toMatchObject({ code: "invalid_configuration" });
     expect(fetch).not.toHaveBeenCalled();
   });

@@ -4,7 +4,7 @@ import {
   scenariosResponseSchema,
   type BackendCapabilities,
   type ScenarioManifest,
-} from "@cua-sample/contracts";
+} from "@jarvis/contracts";
 
 import {
   createRunnerIssue,
@@ -25,10 +25,10 @@ function isRunnerIssue(value: unknown): value is RunnerIssue {
 async function loadRunnerState(runnerBaseUrl: string, expectedBackend: BackendCapabilities["backendId"]) {
   let capabilities: BackendCapabilities | null = null;
   try {
-    if (process.env.CUA_BACKEND && !["javascript", "python"].includes(process.env.CUA_BACKEND)) {
-      throw createRunnerIssue("invalid_configuration", "CUA_BACKEND must be javascript or python.", "Start the console with one of the repository's backend launch commands.");
+    if (process.env.JARVIS_BACKEND && !["javascript", "python"].includes(process.env.JARVIS_BACKEND)) {
+      throw createRunnerIssue("invalid_configuration", "JARVIS_BACKEND must be javascript or python.", "Start the console with one of the repository's backend launch commands.");
     }
-    const options = { cache: "no-store" as const, headers: { "X-CUA-Backend": expectedBackend } };
+    const options = { cache: "no-store" as const, headers: { "X-Jarvis-Backend": expectedBackend } };
     const descriptor = await requestRunnerJson(`${runnerBaseUrl}/api/capabilities`, options, 5_000);
     if (!descriptor.response.ok) {
       throw parseRunnerIssue(descriptor.payload) ?? createRunnerUnavailableIssue(`Runner returned ${descriptor.response.status}.`);
@@ -63,7 +63,7 @@ async function loadRunnerState(runnerBaseUrl: string, expectedBackend: BackendCa
 }
 
 export default async function HomePage() {
-  const expectedBackend = process.env.CUA_BACKEND === "python" ? "python" : "javascript";
+  const expectedBackend = process.env.JARVIS_BACKEND === "python" ? "python" : "javascript";
   const runnerBaseUrl = process.env.RUNNER_BASE_URL ?? `http://127.0.0.1:${expectedBackend === "python" ? 4041 : 4001}`;
   const { capabilities, initialRun, runnerIssue, scenarios } = await loadRunnerState(runnerBaseUrl, expectedBackend);
 

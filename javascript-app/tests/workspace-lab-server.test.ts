@@ -40,7 +40,7 @@ afterEach(async () => {
 });
 
 async function createServer(content: string | Buffer = "<h1>Lab</h1>") {
-  const workspacePath = await mkdtemp(join(tmpdir(), "cua-lab-server-test-"));
+  const workspacePath = await mkdtemp(join(tmpdir(), "jarvis-lab-server-test-"));
   cleanups.push(() => rm(workspacePath, { force: true, recursive: true }));
   await writeFile(join(workspacePath, "index.html"), content);
   await mkdir(join(workspacePath, "assets"));

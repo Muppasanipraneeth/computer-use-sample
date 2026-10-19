@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_MODEL, type RunEvent } from "@cua-sample/contracts";
+import { DEFAULT_MODEL, type RunEvent } from "@jarvis/contracts";
 
 import { RunnerManager } from "../src/runner-manager.js";
 
@@ -25,7 +25,7 @@ vi.mock("../src/lab-catalog.js", () => {
   return { listScenarios: () => [scenario()], getScenarioById: (id: string) => id === "fixture-scenario" ? scenario() : undefined };
 });
 beforeAll(async () => {
-  fixture.workspaceTemplatePath = await mkdtemp(join(tmpdir(), "cua-manager-template-"));
+  fixture.workspaceTemplatePath = await mkdtemp(join(tmpdir(), "jarvis-manager-template-"));
   await writeFile(join(fixture.workspaceTemplatePath, "index.html"), "<!doctype html><title>Fixture</title>");
 });
 afterAll(() => rm(fixture.workspaceTemplatePath, { recursive: true, force: true }));
@@ -37,7 +37,7 @@ afterEach(async () => {
 });
 
 async function createManager() {
-  const root = await mkdtemp(join(tmpdir(), "cua-runner-"));
+  const root = await mkdtemp(join(tmpdir(), "jarvis-runner-"));
   tempRoots.push(root);
 
   return {
@@ -64,7 +64,7 @@ function deferred() {
 
 describe("RunnerManager", () => {
   it("rejects unknown fields before creating a workspace or executor", async () => {
-    const root = await mkdtemp(join(tmpdir(), "cua-code-only-"));
+    const root = await mkdtemp(join(tmpdir(), "jarvis-code-only-"));
     tempRoots.push(root);
     const dataRoot = join(root, "data");
     const executorFactory = vi.fn();
@@ -79,7 +79,7 @@ describe("RunnerManager", () => {
   });
 
   it("keeps replay snapshots readable while progress is being persisted", async () => {
-    const root = await mkdtemp(join(tmpdir(), "cua-replay-read-"));
+    const root = await mkdtemp(join(tmpdir(), "jarvis-replay-read-"));
     tempRoots.push(root);
     let begin!: () => void;
     const ready = new Promise<void>((resolve) => { begin = resolve; });
@@ -118,7 +118,7 @@ describe("RunnerManager", () => {
   });
 
   it("accepts only one simultaneous start", async () => {
-    const root = await mkdtemp(join(tmpdir(), "cua-start-race-"));
+    const root = await mkdtemp(join(tmpdir(), "jarvis-start-race-"));
     tempRoots.push(root);
     const manager = new RunnerManager({
       dataRoot: root,
@@ -132,11 +132,11 @@ describe("RunnerManager", () => {
       if (result.status === "fulfilled") await manager.stopRun(result.value.run.id);
     }
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(results.find((result) => result.status === "rejected")).toMatchObject({ reason: { code: "run_already_active" } });
+    expect(results.find((result) => result.status === "rejected")).toMatchObject({ reason: { code: "run_limit_reached" } });
   });
 
   it("holds the single-run slot until cancelled execution has cleaned up", async () => {
-    const root = await mkdtemp(join(tmpdir(), "cua-stop-race-"));
+    const root = await mkdtemp(join(tmpdir(), "jarvis-stop-race-"));
     tempRoots.push(root);
     let releaseCleanup!: () => void;
     const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
@@ -154,7 +154,7 @@ describe("RunnerManager", () => {
     const next = await manager.startRun(request).then(() => null, (error: unknown) => error);
     releaseCleanup();
     await stopping;
-    expect(next).toMatchObject({ code: "run_already_active" });
+    expect(next).toMatchObject({ code: "run_limit_reached" });
   });
 
   it("rejects run IDs that can escape the data directory", async () => {
@@ -180,7 +180,7 @@ describe("RunnerManager", () => {
     try {
       expect((await manager.getRunDetail(started.run.id)).run.status).toBe("running");
       expect((await manager.getActiveRunDetail())?.run.id).toBe(started.run.id);
-      await expect(manager.startRun(request)).rejects.toMatchObject({ code: "run_already_active" });
+      await expect(manager.startRun(request)).rejects.toMatchObject({ code: "run_limit_reached" });
       releaseCleanup();
       const completed = await waitForRunStatus(manager, started.run.id, "completed");
       expect(completed.events.filter((event) => event.type === "run_completed")).toHaveLength(1);
@@ -268,7 +268,7 @@ describe("RunnerManager", () => {
         finishExecution.resolve();
         await persisting.promise;
         expect((await manager.getActiveRunDetail())?.run.status).toBe("running");
-        await expect(manager.startRun(request)).rejects.toMatchObject({ code: "run_already_active" });
+        await expect(manager.startRun(request)).rejects.toMatchObject({ code: "run_limit_reached" });
         let stopped = false;
         const secondStop = manager.stopRun(started.run.id).then((result) => { stopped = true; return result; });
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -366,6 +366,15 @@ describe("RunnerManager", () => {
     expect(await manager.getActiveRunDetail()).toBeNull();
   });
 
+  it("records a null turn budget as no turn limit", async () => {
+    const { manager } = await createManager();
+    const started = await manager.startRun({ scenarioId: "fixture-scenario", prompt: "Complete fixture.", maxResponseTurns: null });
+    const detail = await manager.getRunDetail(started.run.id);
+    expect(detail.run.maxResponseTurns).toBeNull();
+    expect(detail.events.find(event => event.type === "run_started")?.detail).toMatch(/· no turn limit$/);
+    await manager.shutdown();
+  });
+
   it("publishes failure if the final replay write fails after the record and event log were written", async () => {
     const { dataRoot } = await createManager();
     const manager = new RunnerManager({ dataRoot, executorFactory: () => ({ execute: async (context) => {
@@ -429,7 +438,7 @@ describe("RunnerManager", () => {
   });
 
   it("shuts down an in-flight start and rejects subsequent runs", async () => {
-    const root = await mkdtemp(join(tmpdir(), "cua-shutdown-"));
+    const root = await mkdtemp(join(tmpdir(), "jarvis-shutdown-"));
     tempRoots.push(root);
     let cleanedUp = false;
     const manager = new RunnerManager({

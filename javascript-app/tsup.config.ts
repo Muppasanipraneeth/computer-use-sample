@@ -8,5 +8,5 @@ export default defineConfig({
   outDir: "dist",
   clean: true,
   external: ["playwright"],
-  noExternal: ["@cua-sample/contracts"],
+  noExternal: ["@jarvis/contracts"],
 });

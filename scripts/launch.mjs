@@ -30,7 +30,7 @@ export function launchConfiguration(backend, production = false, env = process.e
       ? [...(production ? [] : ["--import", "tsx"]), join(root, "javascript-app", production ? "dist/index.js" : "src/index.ts")]
       : ["-m", "app"],
     runnerBaseUrl,
-    env: { ...env, HOST: host, PORT: String(port), CUA_BACKEND: backend, RUNNER_BASE_URL: runnerBaseUrl },
+    env: { ...env, HOST: host, PORT: String(port), JARVIS_BACKEND: backend, RUNNER_BASE_URL: runnerBaseUrl },
     consoleCommand: production ? "start" : "dev",
   };
 }
@@ -96,7 +96,7 @@ async function main() {
   const envPath = join(root, ".env");
   if (existsSync(envPath)) process.loadEnvFile(envPath);
   const config = launchConfiguration(backend, options.includes("--production"));
-  config.env.CUA_INSTANCE_ID = randomUUID();
+  config.env.JARVIS_INSTANCE_ID = randomUUID();
   if (backend === "python" && !existsSync(config.command)) {
     throw new Error("Python environment is missing. Run pnpm python:install, then pnpm python:playwright:install.");
   }
@@ -129,7 +129,7 @@ async function main() {
   process.once("SIGTERM", onSignal);
   function start(command, args, cwd, env, managed = false) {
     const child = spawn(command, args, {
-      cwd, env: { ...env, CUA_MANAGED_LAUNCH: managed ? "1" : "0" },
+      cwd, env: { ...env, JARVIS_MANAGED_LAUNCH: managed ? "1" : "0" },
       stdio: [managed ? "pipe" : "inherit", "inherit", "inherit"],
     });
     child.stdin?.on("error", () => { /* A backend may exit before its shutdown request. */ });
@@ -145,7 +145,7 @@ async function main() {
   try {
     const runner = start(config.command, config.args, root, config.env, true);
     await waitForBackend(config.runnerBaseUrl, backend, {
-      signal: controller.signal, isAlive: runner.isAlive, instanceId: config.env.CUA_INSTANCE_ID,
+      signal: controller.signal, isAlive: runner.isAlive, instanceId: config.env.JARVIS_INSTANCE_ID,
     });
     const consoleEnv = { ...config.env };
     delete consoleEnv.OPENAI_API_KEY;

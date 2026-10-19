@@ -42,7 +42,7 @@ Both backends expose the same routes:
 - `GET /api/runs/:id/events` and `GET /api/runs/:id/replay`
 - `GET /api/runs/:id/artifacts/screenshots/:name`
 
-The capabilities response identifies JavaScript, `exec_js`, supported browser modes, and defaults. The shared console is fixed to the backend selected by the root launch command. Its JSON requests carry `X-CUA-Backend`; a mismatch receives HTTP 409 before an action is executed.
+The capabilities response identifies JavaScript, `exec_js`, supported browser modes, and defaults. The shared console is fixed to the backend selected by the root launch command. Its JSON requests carry `X-Jarvis-Backend`; a mismatch receives HTTP 409 before an action is executed.
 
 The start response includes initial run detail. The console combines SSE events with bounded detail polling and can reconnect to an active run after a page refresh. It reconciles a lost Start response through active-run lookup without automatically resending Start.
 

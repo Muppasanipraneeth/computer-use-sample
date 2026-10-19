@@ -1,4 +1,4 @@
-import { type RunnerErrorResponse } from "@cua-sample/contracts";
+import { type RunnerErrorResponse } from "@jarvis/contracts";
 
 type RunnerCoreErrorOptions = {
   code?: string;

@@ -281,6 +281,13 @@ describe("response completion", () => {
     await expect(runResponsesCodeLoop({ context: context as never, session: createMockSession() as never, instructions: "test", maxResponseTurns: 2 }, client)).resolves.toMatchObject({ finalAssistantMessage: "Working." });
     expect(client.create.mock.calls[1]![0]).toMatchObject({ previous_response_id: "response", input: [] });
   });
+  it("keeps looping past the old turn cap when the budget is null", async () => {
+    const { context } = createMockExecutionContext();
+    const create = vi.fn().mockResolvedValue(response([text("final_answer")]));
+    for (let turn = 1; turn < 60; turn += 1) create.mockResolvedValueOnce(response([text("commentary")]));
+    await expect(runResponsesCodeLoop({ context: context as never, session: createMockSession() as never, instructions: "test", maxResponseTurns: null }, { create })).resolves.toMatchObject({ finalAssistantMessage: "Working." });
+    expect(create).toHaveBeenCalledTimes(60);
+  });
   it("validates every call before executing the first", async () => {
     const { context } = createMockExecutionContext();
     const session = createMockSession();

@@ -10,9 +10,9 @@ import { assertPortAvailable, launchConfiguration, requestServiceShutdown, waitF
 test("launch choice selects exactly one runner and one console identity", () => {
   const js = launchConfiguration("javascript", false, {});
   const py = launchConfiguration("python", true, {});
-  assert.equal(js.env.CUA_BACKEND, "javascript");
+  assert.equal(js.env.JARVIS_BACKEND, "javascript");
   assert.equal(js.runnerBaseUrl, "http://127.0.0.1:4001");
-  assert.equal(py.env.CUA_BACKEND, "python");
+  assert.equal(py.env.JARVIS_BACKEND, "python");
   assert.equal(py.runnerBaseUrl, "http://127.0.0.1:4041");
   assert.deepEqual(py.args, ["-m", "app"]);
   assert.equal(py.consoleCommand, "start");
@@ -88,7 +88,7 @@ test("managed JavaScript backend exits gracefully when its launcher closes stdin
   await new Promise(resolve => portProbe.close(resolve));
   const config = launchConfiguration("javascript", false, {
     ...process.env, PORT: String(port), HOST: "127.0.0.1", RUNNER_BASE_URL: `http://127.0.0.1:${port}`,
-    CUA_MANAGED_LAUNCH: "1", OPENAI_API_KEY: "",
+    JARVIS_MANAGED_LAUNCH: "1", OPENAI_API_KEY: "",
   });
   const child = spawn(config.command, config.args, { env: config.env, stdio: ["pipe", "ignore", "pipe"] });
   const exited = once(child, "exit");

@@ -1,7 +1,7 @@
 import { javascriptBackendProps } from "./fixtures";
 import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RunDetail, RunEvent } from "@cua-sample/contracts";
+import type { RunDetail, RunEvent } from "@jarvis/contracts";
 
 import { scenarioFixture as scenario } from "./fixtures";
 import { useRunStream } from "../components/useRunStream";

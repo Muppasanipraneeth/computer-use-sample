@@ -56,7 +56,7 @@ const aborted = () => new JavaScriptRuntimeError("Run aborted.", "run_aborted");
 
 export async function launchJavaScriptSession(options: Options): Promise<JavaScriptSession> {
   if (options.signal?.aborted) throw aborted();
-  const secretEnvNames = new Set(["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CUA_COMPATIBLE_API_KEY"]);
+  const secretEnvNames = new Set(["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "JARVIS_COMPATIBLE_API_KEY"]);
   const childEnvironment = Object.fromEntries(
     Object.entries(process.env).filter(([name]) => !secretEnvNames.has(name.toUpperCase())),
   );

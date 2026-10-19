@@ -17,7 +17,7 @@ import type {
   RunDetail,
   RunEvent,
   ScenarioManifest,
-} from "@cua-sample/contracts";
+} from "@jarvis/contracts";
 
 import { createRunnerUnavailableIssue } from "../components/helpers";
 import { OperatorConsole } from "../components/OperatorConsole";
@@ -298,7 +298,7 @@ describe("OperatorConsole", () => {
     });
     expect(payload).not.toHaveProperty("verificationEnabled");
     expect(payload.model).toBe(javascriptBackendProps.capabilities.defaults.model);
-    expect(options?.headers).toMatchObject({ "X-CUA-Backend": "javascript" });
+    expect(options?.headers).toMatchObject({ "X-Jarvis-Backend": "javascript" });
   });
 
   it("restores the active scenario, options, screenshot and Stop after a page refresh", async () => {

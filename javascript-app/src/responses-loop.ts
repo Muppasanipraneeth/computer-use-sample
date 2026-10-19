@@ -1,4 +1,4 @@
-import { parseModelSelection } from "@cua-sample/contracts";
+import { parseModelSelection } from "@jarvis/contracts";
 import OpenAI from "openai";
 
 import { type JavaScriptSession } from "./browser/javascript-process.js";
@@ -56,7 +56,7 @@ type ResponsesClient = {
 type ResponsesLoopContext = {
   context: RunExecutionContext;
   instructions: string;
-  maxResponseTurns: number;
+  maxResponseTurns: number | null;
   prompt?: string;
   session: JavaScriptSession;
 };
@@ -268,7 +268,7 @@ export async function runResponsesCodeLoop(
   let nextInput: unknown = input.prompt ?? input.context.detail.run.prompt;
   let finalAssistantMessage: string | undefined;
 
-  for (let turn = 1; turn <= input.maxResponseTurns; turn += 1) {
+  for (let turn = 1; turn <= (input.maxResponseTurns ?? Infinity); turn += 1) {
     assertActive(input.context.signal);
     const response = await client.create(
       {

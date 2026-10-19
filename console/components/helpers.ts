@@ -4,7 +4,7 @@ import {
   type RunDetail,
   type RunEvent,
   type RunEventLevel,
-} from "@cua-sample/contracts";
+} from "@jarvis/contracts";
 
 import type {
   ActivityItem,
@@ -21,7 +21,7 @@ export function browserHelpText(backendId: "javascript" | "python") {
 export const turnBudgetHelpText =
   "Caps how many model turns the runner can use before stopping the run. Higher budgets allow longer plans but take more time.";
 export const modelProviderHelpText =
-  "OpenAI uses OPENAI_API_KEY. Claude uses ANTHROPIC_API_KEY. Other API uses CUA_COMPATIBLE_BASE_URL and CUA_COMPATIBLE_API_KEY. Put the keys in the root .env. The model sees screenshots and returns the next code action. A text-only model fails once a screenshot comes back.";
+  "OpenAI uses OPENAI_API_KEY. Claude uses ANTHROPIC_API_KEY. Other API uses JARVIS_COMPATIBLE_BASE_URL and JARVIS_COMPATIBLE_API_KEY. Put the keys in the root .env. The model sees screenshots and returns the next code action. A text-only model fails once a screenshot comes back.";
 export const runnerUnavailableHint =
   "Start the selected backend from the repository root, check the runner terminal, then refresh the page.";
 
@@ -31,8 +31,8 @@ function titleForIssueCode(code: string) {
       return "Runner unavailable";
     case "missing_api_key":
       return "Runner missing API key";
-    case "run_already_active":
-      return "Run already active";
+    case "run_limit_reached":
+      return "Too many tasks running";
     case "backend_mismatch":
       return "Backend mismatch";
     case "invalid_request":

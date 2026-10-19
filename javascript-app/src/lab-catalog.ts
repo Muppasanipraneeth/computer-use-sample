@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 
-import { scenarioManifestSchema, type ScenarioManifest } from "@cua-sample/contracts";
+import { scenarioManifestSchema, type ScenarioManifest } from "@jarvis/contracts";
 import catalog from "../../labs/catalog.json" with { type: "json" };
 
 const labsRoot = new URL("../../labs/", import.meta.url);

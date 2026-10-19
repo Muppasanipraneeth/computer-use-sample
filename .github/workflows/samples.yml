@@ -1,4 +1,4 @@
-name: Computer use samples
+name: Jarvis
 
 on:
   pull_request:
@@ -19,7 +19,7 @@ jobs:
     env:
       NEXT_TELEMETRY_DISABLED: '1'
       OPENAI_API_KEY: ''
-      CUA_LIVE_TESTS: '0'
+      JARVIS_LIVE_TESTS: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -48,7 +48,7 @@ jobs:
         run: pnpm check:js
       - name: Check Python backend and headless lab behavior
         env:
-          CUA_BROWSER_TESTS: '1'
+          JARVIS_BROWSER_TESTS: '1'
         run: pnpm check:python
       - name: Check shared lab templates and JavaScript integration
         run: pnpm check:labs
@@ -66,7 +66,7 @@ jobs:
               kill -TERM "$launcher_pid" 2>/dev/null || true
               wait "$launcher_pid" 2>/dev/null || true
             fi
-            if [ "$result" -ne 0 ]; then cat /tmp/cua-production-*.log; fi
+            if [ "$result" -ne 0 ]; then cat /tmp/jarvis-production-*.log; fi
             exit "$result"
           }
           trap cleanup EXIT
@@ -76,9 +76,9 @@ jobs:
             else
               export PORT=4041
             fi
-            export CUA_BACKEND="$backend"
+            export JARVIS_BACKEND="$backend"
             export RUNNER_BASE_URL="http://127.0.0.1:$PORT"
-            node scripts/launch.mjs "$backend" --production > "/tmp/cua-production-$backend.log" 2>&1 &
+            node scripts/launch.mjs "$backend" --production > "/tmp/jarvis-production-$backend.log" 2>&1 &
             launcher_pid=$!
             curl --fail --retry 30 --retry-connrefused --retry-delay 1 "$RUNNER_BASE_URL/health"
             node --input-type=module <<'JS'
@@ -86,8 +86,8 @@ jobs:
           import { execFile } from 'node:child_process';
           import { promisify } from 'node:util';
           const base = process.env.RUNNER_BASE_URL;
-          const backend = process.env.CUA_BACKEND;
-          const request = (path) => fetch(`${base}${path}`, { headers: { 'X-CUA-Backend': backend } });
+          const backend = process.env.JARVIS_BACKEND;
+          const request = (path) => fetch(`${base}${path}`, { headers: { 'X-Jarvis-Backend': backend } });
           const capabilities = await request('/api/capabilities').then(r => r.json());
           assert.equal(capabilities.backendId, backend);
           assert.equal(capabilities.codeTool, backend === 'python' ? 'exec_py' : 'exec_js');
@@ -96,7 +96,7 @@ jobs:
           assert(scenarios.every(scenario => scenario.defaultPrompt && scenario.workspaceTemplatePath));
           assert.equal(await request('/api/runs/active').then(r => r.json()), null);
           const mismatch = await fetch(`${base}/api/scenarios`, {
-            headers: { 'X-CUA-Backend': backend === 'python' ? 'javascript' : 'python' },
+            headers: { 'X-Jarvis-Backend': backend === 'python' ? 'javascript' : 'python' },
           });
           assert.equal(mismatch.status, 409);
           const other = backend === 'python' ? 'javascript' : 'python';
@@ -109,12 +109,12 @@ jobs:
           const stillRunning = await request('/api/capabilities').then(r => r.json());
           assert.equal(stillRunning.instanceId, capabilities.instanceId);
           JS
-            curl --fail --retry 30 --retry-connrefused --retry-delay 1 http://127.0.0.1:3000/ > /tmp/cua-console.html
+            curl --fail --retry 30 --retry-connrefused --retry-delay 1 http://127.0.0.1:3000/ > /tmp/jarvis-console.html
             node --input-type=module <<'JS'
           import assert from 'node:assert/strict';
           import { readFileSync } from 'node:fs';
-          const html = readFileSync('/tmp/cua-console.html', 'utf8');
-          assert(html.includes(process.env.CUA_BACKEND === 'python' ? 'Python / PyAutoGUI' : 'JavaScript / Playwright'));
+          const html = readFileSync('/tmp/jarvis-console.html', 'utf8');
+          assert(html.includes(process.env.JARVIS_BACKEND === 'python' ? 'Python / PyAutoGUI' : 'JavaScript / Playwright'));
           assert(html.includes('Runner Online'));
           JS
             kill -TERM "$launcher_pid"
