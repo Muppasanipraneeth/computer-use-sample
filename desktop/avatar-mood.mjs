@@ -36,14 +36,55 @@ export function moodFor(text = "", outcome = null) {
   return "neutral";
 }
 
+export const FACE_SPOTS = ["bottom-center", "bottom-right", "top-center", "top-right"];
+
+/** Where a preset puts the window in a display's work area (which already leaves out the menu bar and Dock). */
+export function spotPosition(spot, size, area, margin = 10) {
+  const centreX = area.x + Math.round((area.width - size.width) / 2);
+  const rightX = area.x + area.width - size.width - margin;
+  const topY = area.y + margin;
+  const bottomY = area.y + area.height - size.height - margin;
+  if (spot === "bottom-right") return { x: rightX, y: bottomY };
+  if (spot === "top-center") return { x: centreX, y: topY };
+  if (spot === "top-right") return { x: rightX, y: topY };
+  return { x: centreX, y: bottomY };
+}
+
 /**
- * Where the face goes: its saved spot if that still lies on a screen (displays get unplugged), else the bottom-right
- * corner of the main screen's work area. `areas` are display work areas, the first being the primary.
+ * Where the face goes: a spot it was dragged to, if that still lies on a screen (displays get unplugged), else its
+ * preset (bottom-centre above the Dock, like a dictation pill) on the main screen. `areas` are display work areas,
+ * the first being the primary.
  */
-export function placeFace(saved, size, areas, margin = 24) {
+export function placeFace(saved, size, areas) {
   const fits = (area) =>
-    saved && saved.x >= area.x && saved.y >= area.y && saved.x + size.width <= area.x + area.width && saved.y + size.height <= area.y + area.height;
+    saved.x >= area.x && saved.y >= area.y && saved.x + size.width <= area.x + area.width && saved.y + size.height <= area.y + area.height;
   if (Number.isFinite(saved?.x) && Number.isFinite(saved?.y) && areas.some(fits)) return { x: Math.round(saved.x), y: Math.round(saved.y) };
-  const main = areas[0];
-  return { x: main.x + main.width - size.width - margin, y: main.y + main.height - size.height - margin };
+  return spotPosition(FACE_SPOTS.includes(saved?.spot) ? saved.spot : "bottom-center", size, areas[0]);
+}
+
+/**
+ * After a drag: within `reach` of a preset on the screen it was dropped on, it snaps there (and keeps following that
+ * preset when the screen changes); anywhere else it stays exactly where it was put.
+ */
+export function snapFace(position, size, area, reach = 48) {
+  for (const spot of FACE_SPOTS) {
+    const target = spotPosition(spot, size, area);
+    if (Math.abs(target.x - position.x) <= reach && Math.abs(target.y - position.y) <= reach) return { spot, ...target };
+  }
+  return { x: Math.round(position.x), y: Math.round(position.y) };
+}
+
+export const FACE_MODES = ["always", "talking", "off"];
+
+/** The setting, from older versions' on/off switch too: on becomes "always" (the pill that's always there). */
+export function faceMode(value) {
+  if (value === true) return "always";
+  if (value === false) return "off";
+  return FACE_MODES.includes(value) ? value : "always";
+}
+
+export const FACE_SIZES = { small: 0.8, medium: 1, large: 1.25 };
+
+export function faceScale(size) {
+  return FACE_SIZES[size] ?? FACE_SIZES.medium;
 }

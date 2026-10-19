@@ -1,11 +1,17 @@
-// The floating Jarvis face's expressions. One animation loop eases every part (head tilt, brows, pupils, mouth,
-// moustache, spark) toward the expression for the current state and mood, then adds what makes a face feel alive:
-// breathing, blinks, small glances, eyes that scan while working, and a mouth driven by Jarvis's real voice level.
+// Floating Jarvis. At rest only "the Jarvis line" shows: the launch intro's glowing wave, breathing slowly. When you
+// talk it moves with your voice; when Jarvis speaks it moves with his, and his face rises above it. One animation
+// loop eases every part of the face (head tilt, brows, pupils, mouth, moustache, spark) toward the expression for the
+// current state and mood, then adds what makes a face feel alive: breathing, blinks, small glances, eyes that scan
+// while working, and a mouth driven by Jarvis's real voice level.
 const api = window.avatarApi;
 const root = document.getElementById("avatar");
 const caption = document.getElementById("caption");
 const captionText = document.getElementById("caption-text");
 const faceWrap = document.getElementById("face-wrap");
+const line = document.getElementById("line");
+const lineHint = document.getElementById("line-hint");
+const lineCanvas = document.getElementById("line-wave");
+const lineDraw = lineCanvas.getContext("2d");
 const part = (id) => document.getElementById(id);
 const head = part("head");
 const browL = part("brow-l");
@@ -120,28 +126,91 @@ function frame() {
   spark.style.opacity = String((0.35 + twinkle * 0.65).toFixed(3));
   glint.style.opacity = mood === "happy" ? String((0.45 + Math.sin(t * 3) * 0.25).toFixed(3)) : "0";
   root.style.setProperty("--mic", micLevel.toFixed(3));
+  drawLine(t);
   micLevel *= 0.9;
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 
+// The Jarvis line: the same glowing stroke as the launch intro, quiet at both ends. There are no raw samples here
+// (only a loudness level, 30 times a second), so the shape is a few travelling sine waves whose height follows it:
+// the user's voice while listening, Jarvis's while he speaks, a slow scan while working, a shimmer while thinking.
+const LINE_COLOURS = { hearing: "#ffe3a3", working: "#a9e6c8" };
+let lineEnergy = 0;
+let linePhase = 0;
+let lineAt = 0;
+function drawLine(t) {
+  const ratio = window.devicePixelRatio || 1;
+  const width = lineCanvas.clientWidth;
+  const height = lineCanvas.clientHeight;
+  if (lineCanvas.width !== Math.round(width * ratio) || lineCanvas.height !== Math.round(height * ratio)) {
+    lineCanvas.width = Math.round(width * ratio);
+    lineCanvas.height = Math.round(height * ratio);
+  }
+  lineDraw.setTransform(ratio, 0, 0, ratio, 0, 0);
+  lineDraw.clearRect(0, 0, width, height);
+  const live = state === "speaking" ? voiceLevel : state === "hearing" ? micLevel : 0;
+  const busy = state === "thinking" || state === "transcribing" ? 0.14 : state === "working" ? 0.18 : 0;
+  const goal = Math.max(live, busy);
+  lineEnergy += (goal - lineEnergy) * (goal > lineEnergy ? 0.45 : 0.12);
+  const speed = state === "working" ? 2.2 : state === "thinking" || state === "transcribing" ? 5 : 3 + lineEnergy * 4;
+  // The phase accumulates, so a change of speed doesn't make the wave jump.
+  linePhase += Math.min(0.05, t - lineAt) * speed;
+  lineAt = t;
+  const breath = 0.1 + Math.sin(t * 1.4) * 0.04;
+  // Speech levels sit around 0.3–0.6, so they're amplified to fill the line's height on loud syllables.
+  const amplitude = Math.min(1, breath + lineEnergy * 1.9);
+  const colour = LINE_COLOURS[state] ?? "#e2c4ff";
+  const stroke = (lineWidth, alpha) => {
+    lineDraw.strokeStyle = colour;
+    lineDraw.globalAlpha = alpha;
+    lineDraw.lineWidth = lineWidth;
+    lineDraw.lineCap = "round";
+    lineDraw.lineJoin = "round";
+    lineDraw.beginPath();
+    const steps = 72;
+    for (let index = 0; index <= steps; index += 1) {
+      const u = index / steps;
+      const fade = Math.sin(u * Math.PI);
+      const wave =
+        Math.sin(linePhase + u * 11) * 0.55 + Math.sin(linePhase * 1.7 - u * 19) * 0.3 + Math.sin(linePhase * 0.6 + u * 31) * 0.15;
+      const y = height / 2 + wave * amplitude * fade * (height / 2 - 3);
+      if (index === 0) lineDraw.moveTo(u * width, y);
+      else lineDraw.lineTo(u * width, y);
+    }
+    lineDraw.stroke();
+  };
+  stroke(5, 0.18);
+  stroke(2, 0.95);
+  lineDraw.globalAlpha = 1;
+}
+
 const QUIET = { hearing: "Listening…", transcribing: "Got it…", thinking: "Thinking…" };
 
-api.onState(({ state: nextState, mood: nextMood, caption: text, show }) => {
+let voiceOn = false;
+api.onState(({ state: nextState, mood: nextMood, caption: text, show, expanded, voiceOn: nextVoiceOn }) => {
+  // Hiding fades out with the last expression in place.
+  if (!show) {
+    if (root.classList.contains("shown")) {
+      root.classList.remove("shown");
+      setTimeout(() => api.faded(), 380);
+    }
+    return;
+  }
   if (nextMood === "wink" && mood !== "wink") winkUntil = now() + 0.4;
   state = nextState;
   mood = nextMood;
+  voiceOn = Boolean(nextVoiceOn);
   root.dataset.state = state;
   root.dataset.mood = mood;
+  root.classList.toggle("expanded", Boolean(expanded));
+  root.classList.toggle("voice-on", voiceOn);
+  lineHint.textContent = voiceOn ? "Click to talk · hold to keep talking" : "Click to open Jarvis";
   const words = text || QUIET[state] || "";
   captionText.textContent = words;
   caption.classList.toggle("quiet", !text && Boolean(QUIET[state]));
   root.classList.toggle("has-caption", Boolean(words));
-  if (show) root.classList.add("shown");
-  else if (root.classList.contains("shown")) {
-    root.classList.remove("shown");
-    setTimeout(() => api.faded(), 380);
-  }
+  root.classList.add("shown");
 });
 
 api.onLevel((level, source) => {
@@ -152,28 +221,63 @@ api.onLevel((level, source) => {
   }
 });
 
-// Clicks pass through the transparent window except here; dragging moves it, a click opens Jarvis.
-for (const element of [faceWrap, caption]) {
+// Clicks pass through the transparent window except over the line, face and caption.
+for (const element of [faceWrap, caption, line]) {
   element.addEventListener("mouseenter", () => api.interactive(true));
   element.addEventListener("mouseleave", () => api.interactive(false));
+  element.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    api.menu();
+  });
 }
-let drag = null;
-faceWrap.addEventListener("pointerdown", (event) => {
-  drag = { x: event.screenX, y: event.screenY, moved: false };
-  faceWrap.setPointerCapture(event.pointerId);
-  api.dragStart();
-});
-faceWrap.addEventListener("pointermove", (event) => {
-  if (!drag) return;
-  const dx = event.screenX - drag.x;
-  const dy = event.screenY - drag.y;
-  if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
-  if (drag.moved) api.dragMove(dx, dy);
-});
-faceWrap.addEventListener("pointerup", () => {
-  if (!drag) return;
-  api.dragEnd();
-  if (!drag.moved) api.open();
-  drag = null;
+
+// One gesture handler for the line and the face: moving more than a few pixels drags the window (both carry it).
+// Otherwise, on the line, a quick click talks once and holding talks until you let go; on the face, a click opens
+// Jarvis.
+const HOLD_MS = 280;
+function gestures(element, { onClick, onHold }) {
+  let press = null;
+  element.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    press = { x: event.screenX, y: event.screenY, moved: false, held: false };
+    element.setPointerCapture(event.pointerId);
+    api.dragStart();
+    if (onHold) {
+      press.timer = setTimeout(() => {
+        if (!press || press.moved) return;
+        press.held = true;
+        onHold(true);
+      }, HOLD_MS);
+    }
+  });
+  element.addEventListener("pointermove", (event) => {
+    if (!press || press.held) return;
+    const dx = event.screenX - press.x;
+    const dy = event.screenY - press.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) press.moved = true;
+    if (press.moved) {
+      element.classList.add("dragging");
+      api.dragMove(dx, dy);
+    }
+  });
+  const release = () => {
+    if (!press) return;
+    clearTimeout(press.timer);
+    element.classList.remove("dragging");
+    if (press.moved) api.dragEnd();
+    else if (press.held) onHold(false);
+    else onClick();
+    press = null;
+  };
+  element.addEventListener("pointerup", release);
+  element.addEventListener("pointercancel", release);
+}
+gestures(faceWrap, { onClick: () => api.open() });
+gestures(line, {
+  onClick: () => api.talk("tap"),
+  onHold: (down) => {
+    if (voiceOn) api.talk(down ? "hold-start" : "hold-end");
+    else if (!down) api.open();
+  },
 });
 caption.addEventListener("click", () => api.open());

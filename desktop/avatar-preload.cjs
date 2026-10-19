@@ -10,4 +10,6 @@ contextBridge.exposeInMainWorld("avatarApi", {
   dragMove: (dx, dy) => ipcRenderer.send("avatar:drag-move", dx, dy),
   dragEnd: () => ipcRenderer.send("avatar:drag-end"),
   open: () => ipcRenderer.send("avatar:open"),
+  talk: (kind) => ipcRenderer.send("avatar:talk", kind),
+  menu: () => ipcRenderer.send("avatar:menu"),
 });

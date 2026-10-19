@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld("desktop", {
   onRoutineDue: (handler) => ipcRenderer.on("routine:due", () => handler()),
   typedUnderstand: (text) => ipcRenderer.invoke("typed:understand", text),
   onSignInWaiting: (handler) => ipcRenderer.on("browser:signin-waiting", () => handler()),
+  onOpenSettings: (handler) => ipcRenderer.on("settings:open", (_event, tab) => handler(tab)),
+  onAvatarPrefs: (handler) => ipcRenderer.on("avatar:prefs", (_event, prefs) => handler(prefs)),
   followUp: (request) => ipcRenderer.invoke("run:follow-up", request),
   steerRun: (runId, message, mode, attachments) => ipcRenderer.invoke("run:steer", runId, message, mode, attachments),
   pickAttachments: (kind) => ipcRenderer.invoke("attach:pick", kind),

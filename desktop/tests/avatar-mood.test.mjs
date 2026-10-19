@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { faceState, faceVisible, moodFor, placeFace } from "../avatar-mood.mjs";
+import { faceMode, faceScale, faceState, faceVisible, moodFor, placeFace, snapFace } from "../avatar-mood.mjs";
 
 test("a conversation shows the face; a background task does only while it works, asks or just finished", () => {
   assert.equal(faceState("speaking", "working"), "speaking", "talking wins over the task");
@@ -21,12 +21,30 @@ test("the mood follows the outcome first, then the words", () => {
   assert.equal(moodFor("Opening Spotify now."), "neutral");
 });
 
-test("the face keeps its spot while that spot is on a screen, else goes to the main screen's corner", () => {
-  const size = { width: 400, height: 150 };
+test("the face keeps a dragged spot while that spot is on a screen, else goes to its preset on the main screen", () => {
+  const size = { width: 420, height: 230 };
   const laptop = { x: 0, y: 25, width: 1512, height: 920 };
   const external = { x: 1512, y: 0, width: 2560, height: 1415 };
   assert.deepEqual(placeFace({ x: 2000, y: 600 }, size, [laptop, external]), { x: 2000, y: 600 });
-  assert.deepEqual(placeFace({ x: 2000, y: 600 }, size, [laptop]), { x: 1088, y: 771 }, "external screen unplugged");
-  assert.deepEqual(placeFace(null, size, [laptop]), { x: 1088, y: 771 });
-  assert.deepEqual(placeFace({ x: 1300, y: 100 }, size, [laptop]), { x: 1088, y: 771 }, "half off the edge");
+  assert.deepEqual(placeFace({ x: 2000, y: 600 }, size, [laptop]), { x: 546, y: 705 }, "external screen unplugged: bottom-centre");
+  assert.deepEqual(placeFace(null, size, [laptop]), { x: 546, y: 705 });
+  assert.deepEqual(placeFace({ spot: "top-right" }, size, [laptop]), { x: 1082, y: 35 });
+  assert.deepEqual(placeFace({ x: 1300, y: 100 }, size, [laptop]), { x: 546, y: 705 }, "half off the edge");
+});
+
+test("a drop near a preset snaps to it; anywhere else stays put", () => {
+  const size = { width: 420, height: 230 };
+  const laptop = { x: 0, y: 25, width: 1512, height: 920 };
+  assert.deepEqual(snapFace({ x: 520, y: 690 }, size, laptop), { spot: "bottom-center", x: 546, y: 705 });
+  assert.deepEqual(snapFace({ x: 1070, y: 60 }, size, laptop), { spot: "top-right", x: 1082, y: 35 });
+  assert.deepEqual(snapFace({ x: 300.4, y: 400.6 }, size, laptop), { x: 300, y: 401 });
+});
+
+test("older on/off settings map onto the new modes, and unknown sizes fall back to medium", () => {
+  assert.equal(faceMode(true), "always");
+  assert.equal(faceMode(false), "off");
+  assert.equal(faceMode("talking"), "talking");
+  assert.equal(faceMode(undefined), "always");
+  assert.equal(faceScale("large"), 1.25);
+  assert.equal(faceScale("huge"), 1);
 });

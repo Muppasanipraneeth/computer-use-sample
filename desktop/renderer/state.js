@@ -20,7 +20,8 @@ const DEFAULT_PREFS = {
   followUp: true,
   pauseMusic: true,
   holdControl: true,
-  floatingFace: true, // the floating Jarvis face while talking or working on the screen
+  floatingFace: "always", // floating Jarvis: "always" (the Jarvis line rests on screen), "talking" (only while talking or working), "off"
+  floatingSize: "medium",
   welcome: true, // launch animation and tone
   greet: true, // spoken hello on launch when Voice is on
   personality: "witty",
@@ -39,7 +40,8 @@ const state = {
   model: saved.model ?? "",
   screenOpen: saved.screenOpen ?? true,
   voiceOn: saved.voiceOn ?? false,
-  prefs: { ...DEFAULT_PREFS, ...(saved.prefs ?? {}) },
+  // The floating Jarvis setting used to be an on/off switch; on becomes "always".
+  prefs: { ...DEFAULT_PREFS, ...(saved.prefs ?? {}), ...(typeof saved.prefs?.floatingFace === "boolean" ? { floatingFace: saved.prefs.floatingFace ? "always" : "off" } : {}) },
   // Newest first. Each chat keeps its own runs and "up next" queue; a run keeps working when you open another chat.
   chats: savedChats(),
   chatId: saved.chatId ?? "",

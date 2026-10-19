@@ -1,4 +1,4 @@
-/* global bridge, renderVoice, playChunk, onVoiceCommand, toast, stopSpeaking, chime, state, disableVoice, $, stickToBottom: writable, send, cancelVoicePending, autosize, renderComposer, enableVoice, stopRun, togglePause, pickAttachments, attachDropped, attachPasted, persist, renderHeader, newChat, openWorkspaceDialog, runSearch, saveWorkspace, deleteWorkspace, pickWorkspaceFolder, clearWorkspaceFolder, openSettings, selectSettingsTab, setPref, previewVoice, saveProfile, renderConnections, addMemoryFromForm, addRoutineFromForm, runDueRoutines, checkPermissions, openSetup, pendingConnect: writable, openSource, loadAuth, checkRunner, renderScreen, screenRun, screenshots, openGallery, scrollToLatest, stepGallery */
+/* global bridge, renderVoice, playChunk, onVoiceCommand, toast, stopSpeaking, chime, state, disableVoice, $, stickToBottom: writable, send, cancelVoicePending, autosize, renderComposer, enableVoice, stopRun, togglePause, pickAttachments, attachDropped, attachPasted, persist, renderHeader, newChat, openWorkspaceDialog, runSearch, saveWorkspace, deleteWorkspace, pickWorkspaceFolder, clearWorkspaceFolder, openSettings, selectSettingsTab, setPref, renderPrefs, previewVoice, saveProfile, renderConnections, addMemoryFromForm, addRoutineFromForm, runDueRoutines, checkPermissions, openSetup, pendingConnect: writable, openSource, loadAuth, checkRunner, renderScreen, screenRun, screenshots, openGallery, scrollToLatest, stepGallery */
 // Event wiring: the voice process, scrolling, and every control's listeners. Loads after every script it calls into.
 
 /* ---------- voice events ---------- */
@@ -145,6 +145,12 @@ $("#memory-input").addEventListener("keydown", (event) => {
 });
 bridge.onSignInWaiting?.(() => toast("The sign-in window opens as soon as the running task finishes its browser step.", "info"));
 bridge.onRoutineDue(() => void runDueRoutines());
+// From the floating Jarvis's right-click menu: a changed setting (saved here, where settings live), or "Settings…".
+bridge.onAvatarPrefs?.((prefs) => {
+  for (const [name, value] of Object.entries(prefs ?? {})) if (name === "floatingFace" || name === "floatingSize") setPref(name, value);
+  if ($("#settings").open) renderPrefs();
+});
+bridge.onOpenSettings?.((tab) => openSettings(tab));
 // Connecting finishes in the browser; when the user comes back to Jarvis, show the new state.
 window.addEventListener("focus", () => {
   if ($("#settings").open && !$("#pane-connections").hidden) void renderConnections();

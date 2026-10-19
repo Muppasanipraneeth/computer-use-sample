@@ -1,5 +1,5 @@
 /* global $, state, LISTEN_KEYS, bridge, renderComposer, renderVoice, renderScreen, persist, el, toast, inConversation, say, newChatRecord, renderChats, workingRunIn, send, blocker, favicon, icon, loadAuth */
-/* exported openSettings, selectSettingsTab, applyPrefs, setPref, previewVoice, saveProfile, renderMemories, addMemoryFromForm, renderRoutines, addRoutineFromForm, runDueRoutines, renderConnections, pendingConnect, renderSettings */
+/* exported openSettings, selectSettingsTab, applyPrefs, setPref, renderPrefs, previewVoice, saveProfile, renderMemories, addMemoryFromForm, renderRoutines, addRoutineFromForm, runDueRoutines, renderConnections, pendingConnect, renderSettings */
 // The settings sheet: preferences, voice, profile, memories, routines, connections and API keys.
 
 /* ---------- settings ---------- */
@@ -60,8 +60,8 @@ function renderPrefs() {
 
 // The main process needs the voice preferences (wake word, follow-up, music, personality) and the theme.
 function applyPrefs() {
-  const { wakeWord, followUp, pauseMusic, holdControl, floatingFace, personality, voice } = state.prefs;
-  bridge.voicePrefs?.({ wakeWord, followUp, pauseMusic, holdControl, floatingFace, personality, voice });
+  const { wakeWord, followUp, pauseMusic, holdControl, floatingFace, floatingSize, personality, voice } = state.prefs;
+  bridge.voicePrefs?.({ wakeWord, followUp, pauseMusic, holdControl, floatingFace, floatingSize, personality, voice });
   renderComposer();
   bridge.setTheme?.(state.prefs.theme);
   renderVoice();

@@ -10,7 +10,7 @@
   <body>
     <div class="avatar" id="avatar" data-state="idle" data-mood="neutral">
       <div class="caption" id="caption"><span id="caption-text"></span></div>
-      <div class="face-wrap" id="face-wrap" title="Jarvis · drag to move, click to open">
+      <div class="face-wrap" id="face-wrap" title="Jarvis · drag to move, click to open, right-click to adjust">
         <span class="ring one"></span>
         <span class="ring two"></span>
         <span class="ring work"></span>
@@ -49,6 +49,11 @@
         </svg>
         <span class="thought"><i></i><i></i><i></i></span>
         <span class="glyph">?</span>
+      </div>
+      <!-- "The Jarvis line": the launch intro's wave. Always there; it moves with whoever is talking. -->
+      <div class="line" id="line" title="Click to talk · hold to keep talking · drag to move · right-click to adjust">
+        <canvas id="line-wave"></canvas>
+        <span class="line-hint" id="line-hint">Click to talk</span>
       </div>
     </div>
     <script src="avatar.js"></script>

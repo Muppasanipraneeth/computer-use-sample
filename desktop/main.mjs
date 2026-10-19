@@ -423,7 +423,7 @@ function syncDucking() {
 }
 
 // Settings → Voice. The window owns them (localStorage) and sends them on start and on every change.
-const voicePrefs = { wakeWord: true, followUp: true, pauseMusic: true, holdControl: true, floatingFace: true, personality: "witty", voice: DEFAULT_VOICE };
+const voicePrefs = { wakeWord: true, followUp: true, pauseMusic: true, holdControl: true, floatingFace: "always", floatingSize: "medium", personality: "witty", voice: DEFAULT_VOICE };
 // The floating Jarvis face (avatar-window.mjs), created once the app is ready.
 let avatar = null;
 
@@ -432,8 +432,9 @@ function applyVoicePrefs(prefs) {
   if (typeof prefs?.followUp === "boolean") voicePrefs.followUp = prefs.followUp;
   if (typeof prefs?.pauseMusic === "boolean") voicePrefs.pauseMusic = prefs.pauseMusic;
   if (typeof prefs?.holdControl === "boolean") voicePrefs.holdControl = prefs.holdControl;
-  if (typeof prefs?.floatingFace === "boolean") voicePrefs.floatingFace = prefs.floatingFace;
-  avatar?.setEnabled(voicePrefs.floatingFace);
+  if (["always", "talking", "off", true, false].includes(prefs?.floatingFace)) voicePrefs.floatingFace = prefs.floatingFace;
+  if (["small", "medium", "large"].includes(prefs?.floatingSize)) voicePrefs.floatingSize = prefs.floatingSize;
+  avatar?.setPrefs({ mode: voicePrefs.floatingFace, size: voicePrefs.floatingSize });
   if (["witty", "friendly", "concise"].includes(prefs?.personality)) voicePrefs.personality = prefs.personality;
   if (findVoice(prefs?.voice)) voicePrefs.voice = prefs.voice;
   voice?.worker.postMessage({ type: "prefs", wakeWord: voicePrefs.wakeWord, followUp: voicePrefs.followUp });
@@ -822,8 +823,30 @@ app.whenReady().then(() => {
   });
   ipcMain.on("voice:prefs", (_event, prefs) => applyVoicePrefs(prefs));
   // The floating face follows the conversation (voice state, what Jarvis says, his voice level) and background tasks.
-  avatar = createAvatar({ directory, userData: app.getPath("userData"), onOpen: showMainWindow, log });
-  avatar.setEnabled(voicePrefs.floatingFace);
+  avatar = createAvatar({
+    directory,
+    userData: app.getPath("userData"),
+    onOpen: showMainWindow,
+    // Click the line: one request, as if "Hey Jarvis" was said. Hold it: listen until it's let go, like holding
+    // Control. With voice off it opens Jarvis instead (voice is turned on there).
+    onTalk: (kind) => {
+      if (!voice) {
+        if (kind !== "hold-start") showMainWindow();
+        return;
+      }
+      if (kind === "tap") voice.worker.postMessage({ type: "listen-now" });
+      else if (kind === "hold-start") voice.worker.postMessage({ type: "listen-now", hold: true });
+      else voice.worker.postMessage({ type: "release" });
+    },
+    onSettings: () => {
+      showMainWindow();
+      mainWindow?.webContents.send("settings:open", "voice");
+    },
+    // The right-click menu changed a setting: the window owns settings, so it saves it and sends it back.
+    onPrefs: (prefs) => mainWindow?.webContents.send("avatar:prefs", prefs),
+    log,
+  });
+  avatar.setPrefs({ mode: voicePrefs.floatingFace, size: voicePrefs.floatingSize });
   ipcMain.on("avatar:voice", (_event, payload) => avatar.voice(payload));
   ipcMain.on("avatar:task", (_event, task, text, outcome) => avatar.task(typeof task === "string" ? task : null, typeof text === "string" ? text : "", typeof outcome === "string" ? outcome : null));
   ipcMain.on("avatar:level", (_event, level, source) => {
