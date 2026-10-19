@@ -191,7 +191,7 @@ function finishCapture() {
   capture = null;
   stream = spotter.createStream();
   if (segments.length === 0) {
-    post({ type: "state", state: "listening", note: source === "wake" || source === "push-to-talk" ? "no-speech" : undefined, source });
+    post({ type: "state", state: "listening", note: ["wake", "push-to-talk", "dictation"].includes(source) ? "no-speech" : undefined, source });
     return;
   }
   post({ type: "state", state: "transcribing" });

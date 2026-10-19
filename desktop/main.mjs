@@ -403,6 +403,7 @@ const LISTEN_SHORTCUT = "CommandOrControl+Shift+Space";
 const CONTROL_KEY = process.platform === "win32" ? path.join(directory, "native", "control-key.ps1") : path.join(directory, "native", "control-key");
 const controlKeyAvailable = (process.platform === "darwin" || process.platform === "win32") && existsSync(CONTROL_KEY);
 let controlKey = null; // { child, hold, dictate } while voice is on and the setting allows it
+let quitting = false; // the app is quitting: the voice engine stopping then isn't a failure
 // Music stays ducked for the whole exchange: listening, thinking, Jarvis speaking, and the follow-up window after it.
 let workerState = "off";
 let conversationBusy = false;
@@ -472,7 +473,7 @@ function startControlKey() {
     const lines = (partial + chunk).split("\n");
     partial = lines.pop();
     for (const line of lines) {
-      if (line === "untrusted") voiceDebug("control key: no Accessibility permission, so holding Control does nothing");
+      if (line === "untrusted") log.warn("key watcher has no Accessibility permission: holding Control (ask) or Control+Option (dictate) does nothing. Allow Jarvis in System Settings → Privacy & Security → Accessibility, then turn Voice off and on.");
       else if (line.startsWith("dictate-")) dictate.handle(line.slice("dictate-".length));
       else hold.handle(line);
     }
@@ -576,6 +577,7 @@ async function understand({ text, source, running, lastReply }) {
   const model = await lookUpUnderstandingModel();
   const lookedUp = performance.now();
   reply = parseUnderstanding("", text);
+  let fallback = "no understanding model"; // why the words would run as spoken, for the log
   if (model) {
     const profile = await userContext();
     // The installed apps, so "open scroll" (a real mishearing of "open Chrome") becomes the app that sounds closest.
@@ -584,8 +586,10 @@ async function understand({ text, source, running, lastReply }) {
     try {
       const completed = await runOmp(["-p", "--no-tools", "--no-session", "--no-extensions", "--no-skills", "--no-rules", "--thinking", "off", "--model", model, "--system-prompt", instructions, text], 10_000);
       if (completed.code === 0) reply = parseUnderstanding(completed.stdout, text);
-    } catch {
+      fallback = completed.code !== 0 ? `omp exited with code ${completed.code}: ${completed.stderr.trim().split("\n").pop()?.slice(0, 200) ?? ""}` : "the model's reply wasn't usable JSON";
+    } catch (error) {
       // Slow or offline: fall back to running the words as spoken.
+      fallback = error instanceof Error ? error.message : String(error);
     }
   }
   // The model recognised a one-step command in messier words ("put on blinding lights by the weekend"): run it now.
@@ -604,7 +608,7 @@ async function understand({ text, source, running, lastReply }) {
     rememberTurn({ role: "jarvis", text: reply.say, task: reply.prompt || undefined });
   }
   voiceDebug(`understood in ${((performance.now() - started) / 1000).toFixed(1)} s (model lookup ${((lookedUp - started) / 1000).toFixed(1)} s, ${model ?? "no model"}): ${reply.kind} "${reply.say}"`);
-  if (!reply.understood) log.warn(`voice understanding fell back to the raw words (${model ? "model reply unusable or slow" : "no understanding model"})`);
+  if (!reply.understood) log.warn(`voice understanding fell back to the raw words (${model ? fallback : "no understanding model"}, ${model ?? "no model"})`);
   return reply;
 }
 
@@ -791,8 +795,9 @@ async function startVoice(owner) {
   const failed = (code, wasCurrent) => {
     if (wasCurrent) {
       stopVoice();
-      if (code) log.error(`voice engine exited with code ${code}`);
-      send("voice:state", { state: "off", error: code ? "The voice engine stopped unexpectedly." : undefined });
+      // Quitting stops the engine too (SIGTERM, code 15): that isn't a failure.
+      if (code && !quitting) log.error(`voice engine exited with code ${code}`);
+      send("voice:state", { state: "off", error: code && !quitting ? "The voice engine stopped unexpectedly." : undefined });
     }
   };
   const listenerReady = new Promise((resolve) => {
@@ -808,6 +813,7 @@ async function startVoice(owner) {
         // A new request starts with no words yet ("Listening…"), not the last one's. Reset here, in the same order as
         // the words that follow: the window's relay of this state can arrive after them and used to wipe them.
         if (message.state === "hearing") avatar?.voice({ heard: "" });
+        if (message.note === "no-speech" && message.source === "dictation") log.info("dictation: caught no words");
         send("voice:state", message);
       } else if (message.type === "partial") {
         // The words so far while the user talks: under the floating face, and in the message box unless they're
@@ -951,6 +957,9 @@ app.whenReady().then(() => {
   // Settings → Appearance: "system" follows macOS/Windows; the renderer's colours follow through prefers-color-scheme.
   ipcMain.on("theme:set", (_event, mode) => {
     if (["system", "light", "dark"].includes(mode)) nativeTheme.themeSource = mode;
+  });
+  app.on("before-quit", () => {
+    quitting = true;
   });
   app.on("will-quit", () => {
     ducker.restoreNow();
