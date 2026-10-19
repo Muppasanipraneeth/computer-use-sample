@@ -100,6 +100,16 @@ test("a model reply becomes what Jarvis says and the cleaned task for the agent"
   });
 });
 
+test("the understanding reply preserves a single immediate app action without discarding the user's full task", () => {
+  assert.deepEqual(parseUnderstanding(
+    '{"kind":"task","say":"On it.","prompt":"Play Blinding Lights by The Weeknd in Spotify.","quick":{"do":"play","query":"Blinding Lights by The Weeknd"}}',
+    "play blinding lights by the weekend",
+  ), {
+    kind: "task", say: "On it.", prompt: "Play Blinding Lights by The Weeknd in Spotify.",
+    quick: { do: "play", query: "Blinding Lights by The Weeknd" }, understood: true,
+  });
+});
+
 test("unusable replies fall back to running the words as spoken", () => {
   const said = "open finder";
   const fallback = { kind: "task", say: "On it.", prompt: said, understood: false };

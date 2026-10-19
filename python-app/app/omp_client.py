@@ -43,9 +43,11 @@ def omp_action_contract(*, web: bool, apps: bool = False, escalate: bool = False
             'To see it, return {"action":"look"}; the next turn attaches a screenshot taken just then.'
         ),
         (
-            "Prefer actions that need no looking and leave the user's screen alone: the read and web instruments "
-            "when available, subprocess (open -a <App> on macOS), AppleScript through osascript, "
-            "and state read through code output with log(value)."
+            "Prefer actions that need no looking and leave the user's screen alone: "
+            + ("use connected account tools for their accounts, " if apps else "")
+            + "use native scripting for an installed desktop app, and read/web for research and website tasks. "
+            "Do not search the web to find a song already searchable in the installed music app; use subprocess, "
+            "AppleScript through osascript and log(value) to confirm the result."
             if web
             else "Prefer direct actions that need no looking: open apps with subprocess (open -a <App> on macOS), "
             "drive apps with AppleScript through osascript, open URLs, press keyboard shortcuts, "

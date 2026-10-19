@@ -95,8 +95,9 @@ export function understandingInstructions({ now, source, running, lastReply, his
     "You are Jarvis, a voice assistant that does tasks on the user's computer through a desktop agent.",
     "The user's words come from speech recognition and may contain recognition mistakes; read them for what was meant.",
     "Reply with exactly one JSON object and nothing else:",
-    '{"kind":"task"|"answer"|"remember"|"schedule"|"stop"|"cancel"|"ignore","say":"…","prompt":"…","time":"HH:MM","days":[0,1,2,3,4,5,6]}',
+    '{"kind":"task"|"answer"|"remember"|"schedule"|"stop"|"cancel"|"ignore","say":"…","prompt":"…","quick":{…},"time":"HH:MM","days":[0,1,2,3,4,5,6]}',
     '"time" and "days" only for "schedule"; leave them out otherwise.',
+    '"quick" only for a "task" that is exactly one command to run now without the agent: {"do":"play","query":"<song title> by <artist>"} (a named song in Spotify, include "by artist" when known), {"do":"pause"}, {"do":"resume"}, {"do":"next"}, {"do":"previous"}, {"do":"volume","level":0-100} (computer volume), {"do":"open","app":"<app name>"}. Correct clear speech-recognition mistakes in names, but do not guess an artist. Leave "quick" out for albums, playlists, genres, another service (YouTube/Apple Music), song lyrics, or requests containing another step.',
     '- "task": something to do on the computer or the web, including any question that needs current or live information (news, weather, prices, scores, anything recent): the agent can browse the web, so never say you can\'t check something. "say" is at most two short spoken sentences: what you will do, in first person, and (if your personality jokes) your quip. "prompt" is the task as a clear instruction for the desktop agent, keeping every detail the user gave; for a question, ask the agent to look it up and report the answer. A reply like "yes, do it" to a task you proposed is that task again.',
     '- "answer": a greeting, a question about you or the conversation, a request for a joke, a fact or motivation, or anything timeless you can answer without the computer. "say" is the spoken answer, at most three short sentences. "prompt" is "".',
     '- "stop": the user wants the running task stopped. "cancel": the user takes the request back. For both, "say" is a short confirmation and "prompt" is "".',
@@ -140,7 +141,8 @@ export function parseUnderstanding(stdout, transcript) {
     }
     return { kind, say, prompt, time: reply.time, days, understood: true };
   }
-  return { kind, say: kind === "ignore" ? "" : say, prompt: needsPrompt ? prompt : "", understood: true };
+  const quick = kind === "task" && reply.quick && typeof reply.quick === "object" ? reply.quick : undefined;
+  return { kind, say: kind === "ignore" ? "" : say, prompt: needsPrompt ? prompt : "", ...(quick ? { quick } : {}), understood: true };
 }
 
 // Typed text that may be a routine or something to remember goes through the model first; everything else starts

@@ -53,6 +53,7 @@ import { devRunner, loginShellPath, prepareRunner, standaloneRunner, startRunner
 import { createLogger, logDirectory, redact, tailFile } from "./logger.mjs";
 import { greetingKey, greetingText, joinChunks, PARTS_OF_DAY, pruneGreetings, readGreeting, writeGreeting } from "./greeting-voice.mjs";
 import { createAvatar } from "./avatar-window.mjs";
+import { checkQuickAction, installedApps, matchQuickAction, runQuickAction } from "./quick-actions.mjs";
 
 // desktop.log beside the runner's runner.log; "Copy diagnostics" in Settings bundles the tail of both.
 const log = createLogger();
@@ -510,11 +511,36 @@ async function lookUpUnderstandingModel() {
   return understandingModel;
 }
 
+// Installed apps, for quick actions ("open Slack", music in Spotify); re-read every few minutes in case one was added.
+let appsCache = { at: 0, apps: new Map() };
+function apps() {
+  if (Date.now() - appsCache.at > 5 * 60_000) appsCache = { at: Date.now(), apps: installedApps() };
+  return appsCache.apps;
+}
+
+/** Runs a quick action and speaks what actually happened; a failed app action must not start a web-search task. */
+async function quickReply(action, started) {
+  const result = await runQuickAction(action).catch(() => ({ ok: false, say: "I couldn't complete that in the app." }));
+  voiceDebug(`quick action ${action.do} ${result.ok ? "done" : "failed"} in ${((performance.now() - started) / 1000).toFixed(1)} s`);
+  log.info(`quick action: ${action.do} ${result.ok ? "done" : "failed"} in ${Math.round(performance.now() - started)} ms`);
+  return { kind: "answer", say: result.say, prompt: "", understood: true, quick: action };
+}
+
 async function understand({ text, source, running, lastReply }) {
   const started = performance.now();
+  // Plain commands ("play Blinding Lights", "pause", "open Slack") run at once, with no model call at all.
+  const instant = matchQuickAction(text, apps());
+  let reply = instant ? await quickReply(instant, started) : null;
+  if (reply) {
+    if (source !== "typed") {
+      rememberTurn({ role: "user", text });
+      rememberTurn({ role: "jarvis", text: reply.say });
+    }
+    return reply;
+  }
   const model = await lookUpUnderstandingModel();
   const lookedUp = performance.now();
-  let reply = parseUnderstanding("", text);
+  reply = parseUnderstanding("", text);
   if (model) {
     const profile = await userContext();
     const instructions = understandingInstructions({ now: new Date().toLocaleString(), source, running, lastReply, history: voiceHistory, personality: voicePrefs.personality, profile });
@@ -525,6 +551,9 @@ async function understand({ text, source, running, lastReply }) {
       // Slow or offline: fall back to running the words as spoken.
     }
   }
+  // The model recognised a one-step command in messier words ("put on blinding lights by the weekend"): run it now.
+  const action = reply.kind === "task" ? checkQuickAction(reply.quick, apps(), process.platform, text) : null;
+  if (action) reply = await quickReply(action, started);
   // Remembering and scheduling happen here, so they work from voice and typing alike; the reply's say confirms it.
   if (reply.kind === "remember") await addMemory(app.getPath("userData"), reply.prompt);
   if (reply.kind === "schedule") {
@@ -918,9 +947,15 @@ app.whenReady().then(() => {
     return { ok: true, routines: routineViews(await readRoutines(dir)) };
   });
   handle("routines:take-due", () => ({ ok: true, routines: dueQueue.splice(0) }));
-  // Typed text that looks like a routine or a memory goes through the model; anything else is a plain task (null).
+  // Typed text: a quick action ("play Blinding Lights", "open Slack") runs at once; text that looks like a routine or
+  // a memory goes through the model; anything else is a plain task (null), with no added wait.
   handle("typed:understand", async (text) => {
     const words = String(text ?? "").trim();
+    const instant = words ? matchQuickAction(words, apps()) : null;
+    if (instant) {
+      const reply = await quickReply(instant, performance.now());
+      if (reply) return { ok: true, reply };
+    }
     if (!words || !typedNeedsUnderstanding(words)) return { ok: true, reply: null };
     return { ok: true, reply: await understand({ text: words, source: "typed", running: null, lastReply: null }) };
   });

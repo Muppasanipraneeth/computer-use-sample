@@ -41,7 +41,15 @@ def instrument_lines(*, web: bool, cloud: bool = False, apps: bool = False) -> l
         ),
         *logins,
         *connected_apps,
-        "subprocess and AppleScript (osascript) also work without the mouse, e.g. telling Spotify to play.",
+        (
+            "For a song in installed Spotify, use its app, not web search: AppleScript "
+            "'tell application \"Spotify\" to play track \"spotify:search:<song> by <artist>\"' plays the top result. "
+            "Read name and artist of current track to verify the requested recording; a top result may be a cover. "
+            "If the artist is wrong, do not claim success or keep that result playing. For other explicitly named "
+            "desktop apps, use their native actions when available. "
+            + ("For email, calendar and Slack, connected-app APIs above take precedence. " if apps else "")
+            + "Use web only when the requested task actually needs a website."
+        ),
         (
             "pyautogui controls the user's real mouse, keyboard and screen. Use it only when a task needs a desktop app's "
             "interface that nothing above can drive, and keep that part short. Never use it to browse the web."
