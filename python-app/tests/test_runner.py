@@ -487,3 +487,65 @@ async def test_one_question_at_a_time_and_a_steer_while_waiting_reaches_the_next
         ("Approval requested.", "warn", "Send it?\nTo: a@b.c"),
         ("You declined.", "warn", "Send it?"),
     ]
+
+
+def omp_catalog(monkeypatch, *selectors):
+    async def listed():
+        return {"available": True, "models": [{"selector": selector} for selector in selectors]}
+    monkeypatch.setattr("app.omp_client.list_omp_models", listed)
+
+
+async def test_auto_chooses_by_task_announces_it_and_persists_its_switch_and_usage(manager_factory, monkeypatch):
+    from app.model_selection import FAST_MODEL, QUICK_MODEL, STRONG_MODEL
+    from app.run_model import RunModel, call_usage
+    omp_catalog(monkeypatch, "anthropic/claude-haiku-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5")
+    seen = {}
+
+    async def executor(context):
+        seen["start"], seen["stronger"] = context.detail["run"]["model"], context.stronger_models
+        model = RunModel(context, context.detail["run"]["model"], context.stronger_models)
+        model.replied(call_usage(input_tokens=100, output_tokens=5, cost_usd=0.5))
+        model.requested("Stuck.")
+        await model.next()
+        model.replied(call_usage(input_tokens=200, output_tokens=7, cached_tokens=150))
+        await context.complete_run(notes=["done"])
+    manager = manager_factory(executor)
+    detail = await manager.start_run(request(scenarioId="any-task", prompt="What's the weather in Paris?", model="auto"))
+    run = detail["run"]
+    assert run["model"] == QUICK_MODEL
+    assert run["modelChoice"] == {"model": QUICK_MODEL, "tier": "quick", "reason": "quick question"}
+    assert run["modelSwitches"] == []
+    assert run["usage"] == {"inputTokens": 0, "outputTokens": 0, "cachedTokens": 0, "costUsd": None, "turns": 0}
+    chose = [event for event in detail["events"] if event["message"] == "Chose a model for this task."]
+    assert [(event["type"], event["level"], event["detail"]) for event in chose] == [("run_progress", "ok", "claude-haiku-5-5 · quick question")]
+    final = await wait_for_run_status(manager, run["id"], "completed")
+    assert seen == {"start": QUICK_MODEL, "stronger": (FAST_MODEL, STRONG_MODEL)}
+    assert final["run"]["model"] == FAST_MODEL
+    assert final["run"]["modelChoice"] == run["modelChoice"], "the choice records where the run started"
+    assert [(switch["from"], switch["to"]) for switch in final["run"]["modelSwitches"]] == [(QUICK_MODEL, FAST_MODEL)]
+    assert final["run"]["usage"] == {"inputTokens": 300, "outputTokens": 12, "cachedTokens": 150, "costUsd": 0.5, "turns": 2}
+    manager.contexts.clear()
+    assert (await manager.get_run_detail(run["id"]))["run"] == final["run"]
+
+
+async def test_auto_without_its_models_is_refused_before_admission(manager_factory, monkeypatch):
+    omp_catalog(monkeypatch)
+    manager = manager_factory(idle)
+    with pytest.raises(RunnerCoreError) as caught:
+        await manager.start_run(request(model="auto"))
+    assert caught.value.code == "model_unavailable"
+    assert manager.active == {}
+
+
+async def test_a_chosen_model_has_no_choice_and_no_stronger_models(manager_factory):
+    seen = {}
+
+    async def executor(context):
+        seen["stronger"] = context.stronger_models
+        await context.complete_run(notes=["done"])
+    manager = manager_factory(executor)
+    detail = await manager.start_run(request(model="omp:anthropic/claude-opus-5-5"))
+    await wait_for_run_status(manager, detail["run"]["id"], "completed")
+    assert detail["run"]["model"] == "omp:anthropic/claude-opus-5-5" and seen == {"stronger": ()}
+    assert detail["run"]["modelChoice"] is None
+    assert not any(event["message"] == "Chose a model for this task." for event in detail["events"])

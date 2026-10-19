@@ -2,19 +2,76 @@
 // (a development copy in desktop/.dev) and `pnpm desktop:install` (the app installed in /Applications).
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(desktopDir, "..");
 export const electronBinary = createRequire(import.meta.url)("electron");
 export const electronApp = path.resolve(electronBinary, "..", "..", ".."); // …/Electron.app
 export const iconPng = path.join(desktopDir, "assets", "icon.png");
 
 export function run(command, args) {
   execFileSync(command, args, { stdio: ["ignore", "ignore", "inherit"] });
+}
+
+/** The real `uv` binary on PATH (symlinks resolved), or null. */
+export function findUv(env = process.env) {
+  for (const directory of (env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
+    const candidate = path.join(directory, process.platform === "win32" ? "uv.exe" : "uv");
+    if (existsSync(candidate)) return realpathSync(candidate);
+  }
+  return null;
+}
+
+function directorySize(target) {
+  const stats = statSync(target);
+  if (!stats.isDirectory()) return stats.size;
+  return readdirSync(target).reduce((total, name) => total + directorySize(path.join(target, name)), 0);
+}
+
+/**
+ * Copies what the installed app needs to run the Python runner without the repo into `target`
+ * (Contents/Resources/runner): python-app's source and lockfile, contracts/defaults.json (read by its config), the
+ * labs catalog with its templates, and the `uv` binary from PATH as bin/uv. The layout mirrors the repo's, so the
+ * runner's paths work unchanged. Returns the bundle's size in bytes.
+ */
+export function bundleRunner(target) {
+  const uv = findUv();
+  if (!uv) throw new Error("uv isn't on PATH. Install it (https://docs.astral.sh/uv/), then run pnpm desktop:install again.");
+  rmSync(target, { recursive: true, force: true });
+  const source = path.join(repoRoot, "python-app");
+  const project = path.join(target, "python-app");
+  mkdirSync(project, { recursive: true });
+  cpSync(path.join(source, "app"), path.join(project, "app"), {
+    recursive: true,
+    filter: (file) => path.basename(file) !== "__pycache__" && !file.endsWith(".pyc"),
+  });
+  for (const file of ["pyproject.toml", "uv.lock", "README.md", ".python-version"]) {
+    if (existsSync(path.join(source, file))) copyFileSync(path.join(source, file), path.join(project, file));
+  }
+  mkdirSync(path.join(target, "contracts"), { recursive: true });
+  copyFileSync(path.join(repoRoot, "contracts", "defaults.json"), path.join(target, "contracts", "defaults.json"));
+
+  const labs = path.join(repoRoot, "labs");
+  mkdirSync(path.join(target, "labs"), { recursive: true });
+  copyFileSync(path.join(labs, "catalog.json"), path.join(target, "labs", "catalog.json"));
+  const catalog = JSON.parse(readFileSync(path.join(labs, "catalog.json"), "utf8"));
+  for (const directory of new Set(catalog.scenarios.map((scenario) => scenario.templateDirectory))) {
+    cpSync(path.join(labs, directory), path.join(target, "labs", directory), {
+      recursive: true,
+      filter: (file) => !["node_modules", "tests", "docs", ".DS_Store"].includes(path.basename(file)),
+    });
+  }
+
+  mkdirSync(path.join(target, "bin"), { recursive: true });
+  const bundledUv = path.join(target, "bin", path.basename(uv));
+  copyFileSync(uv, bundledUv);
+  chmodSync(bundledUv, 0o755);
+  return directorySize(target);
 }
 
 /**

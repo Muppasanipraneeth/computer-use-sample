@@ -89,9 +89,8 @@ async function isFile(file) {
   }
 }
 
-/** The Chromium revision the runner's Python Playwright launches, read from its bundled browsers.json. */
-export async function runnerChromiumRevision(repoRoot) {
-  const venv = path.join(repoRoot, "python-app", ".venv");
+/** The Chromium revision the runner's Python Playwright launches, read from the bundled browsers.json in its venv. */
+export async function runnerChromiumRevision(venv) {
   const packages = [path.join(venv, "Lib", "site-packages")];
   try {
     for (const name of await readdir(path.join(venv, "lib"))) packages.push(path.join(venv, "lib", name, "site-packages"));
@@ -201,7 +200,7 @@ export async function handOverProfile({ profileDirectory, commandLines, timeoutM
 export async function openSignInBrowser({
   url,
   userData,
-  repoRoot,
+  runnerVenv,
   onWaiting = () => {},
   platform = process.platform,
   env = process.env,
@@ -213,7 +212,7 @@ export async function openSignInBrowser({
   if (!target) return { ok: false, error: "Only http and https pages can be opened for sign-in." };
   const profileDirectory = browserProfileDirectory(userData);
   const root = playwrightBrowsersRoot({ platform, env, home });
-  const executable = await chromiumExecutable({ root, platform, revision: await runnerChromiumRevision(repoRoot) });
+  const executable = await chromiumExecutable({ root, platform, revision: await runnerChromiumRevision(runnerVenv) });
   if (!executable) {
     return { ok: false, error: `Jarvis's browser is not installed. Run "uv run --project python-app playwright install chromium", then try again.` };
   }

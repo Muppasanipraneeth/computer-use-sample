@@ -3,6 +3,12 @@
 from dataclasses import dataclass
 
 PROVIDERS = ("openai", "anthropic", "compatible", "omp")
+# A start request's model "auto" picks a tier from the task (model_routing.route_task) and escalates a tier at a time
+# if the run struggles (run_model.RunModel). Settings/env override each tier's model.
+AUTO_MODEL = "auto"
+QUICK_MODEL = "omp:anthropic/claude-haiku-5-5"
+FAST_MODEL = "omp:anthropic/claude-sonnet-5-5"
+STRONG_MODEL = "omp:anthropic/claude-opus-5-5"
 
 
 @dataclass(frozen=True)

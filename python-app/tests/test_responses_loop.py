@@ -14,6 +14,7 @@ from app.responses_loop import (
     create_default_responses_client,
     run_responses_code_loop,
 )
+from app.run_model import SWITCH_MESSAGE, SWITCHING_NOTE
 
 
 def call(code="log('hello')", call_id="call-1", **overrides):
@@ -272,3 +273,31 @@ def test_general_desktop_tool_names_instruments_not_unreal():
 
 def test_lab_tool_still_starts_with_a_screenshot():
     assert "Start with display(pyautogui.screenshot())." in tool_text()
+
+
+async def test_auto_escalate_tool_switches_the_model_once_and_usage_adds_up():
+    escalate = call(name="escalate", arguments=json.dumps({"reason": "Needs careful planning."}), call_id="call-esc")
+    context, session, client = harness(
+        response(escalate, response_id="r1", usage={"input_tokens": 1000, "output_tokens": 10, "input_tokens_details": {"cached_tokens": 800}}),
+        response(call(), response_id="r2", usage={"input_tokens": 1500, "output_tokens": 30}),
+        response(message(), response_id="r3"),
+    )
+    await run_responses_code_loop(context, session, "Instructions", None, client=client, stronger_models=["test-strong"])
+
+    requests = [entry.args[0] for entry in client.create.await_args_list]
+    assert [request["model"] for request in requests] == ["test-model", "test-strong", "test-strong"]
+    assert all("escalate" in [tool["name"] for tool in request["tools"]] for request in requests)
+    assert requests[1]["previous_response_id"] == "r1"
+    assert requests[1]["input"] == [{"call_id": "call-esc", "type": "function_call_output",
+                                     "output": [{"type": "input_text", "text": SWITCHING_NOTE}]}]
+    switched = [entry.args[0] for entry in context.emit_event.await_args_list if entry.args[0]["message"] == SWITCH_MESSAGE]
+    assert [event["detail"] for event in switched] == ["test-strong · the model asked: Needs careful planning."]
+    run = context.detail["run"]
+    assert run["model"] == "test-strong" and len(run["modelSwitches"]) == 1
+    assert run["usage"] == {"inputTokens": 2500, "outputTokens": 40, "cachedTokens": 800, "costUsd": None, "turns": 3}
+
+
+async def test_a_chosen_openai_model_is_not_offered_escalate():
+    context, session, client = harness(response(message()))
+    await run_responses_code_loop(context, session, "Instructions", None, client=client)
+    assert [tool["name"] for tool in client.create.await_args.args[0]["tools"]] == ["exec_py", "ask_user"]

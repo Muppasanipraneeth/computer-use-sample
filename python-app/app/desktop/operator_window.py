@@ -14,7 +14,7 @@ from tkinter import BOTH, END, LEFT, RIGHT, StringVar, Tk, Toplevel, X, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Any
 
-from app.config import REPO_ROOT
+from app.config import env_file
 from app.desktop.operator import (
     accounts_from_omp_stdout,
     auth_snapshot,
@@ -60,7 +60,7 @@ def fetch_bytes(path: str, timeout: float = 20) -> bytes:
 
 class OperatorWindow:
     def __init__(self, env_path: Path | None = None) -> None:
-        self.env_path = env_path or (REPO_ROOT / ".env")
+        self.env_path = env_path or env_file()
         self.seen_events: set[str] = set()
         self.scenarios: list[dict[str, Any]] = []
         self.accounts: list[dict[str, str]] = []

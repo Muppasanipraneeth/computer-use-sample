@@ -170,6 +170,66 @@ def prune_storage(data_root: Path, *, keep_runs: int, keep_days: float, active: 
     return removed
 
 
+FINAL_NOTE = "Model final response: "
+FINAL_EVENT = "Model returned a final response."
+SNIPPET_CHARS = 160
+
+
+def _final_reply(run_dir: Path, record: dict) -> str:
+    """The model's final answer: the summary note the runner records, else the final-response event (older records)."""
+    summary = record.get("summary")
+    for note in (summary.get("notes") or []) if isinstance(summary, dict) else []:
+        if isinstance(note, str) and note.startswith(FINAL_NOTE):
+            return note[len(FINAL_NOTE):]
+    try:
+        lines = (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        if FINAL_EVENT not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("message") == FINAL_EVENT:
+            return str(event.get("detail") or "")
+    return ""
+
+
+def _snippet(text: str, at: int, length: int) -> str:
+    start = max(0, at + length // 2 - SNIPPET_CHARS // 2)
+    end = min(len(text), start + SNIPPET_CHARS)
+    start = max(0, end - SNIPPET_CHARS)
+    body = " ".join(text[start:end].split())
+    return f"{'…' if start else ''}{body}{'…' if end < len(text) else ''}"
+
+
+def search_runs(data_root: Path, query: str, limit: int = 50) -> list[dict]:
+    """Runs on disk whose prompt or final reply contains `query` (case-insensitive), newest first."""
+    needle = query.lower()
+    found: list[dict] = []
+    runs = data_root / "runs"
+    for run_dir in (runs.iterdir() if runs.is_dir() else ()):
+        try:
+            record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+            continue
+        prompt = str(record.get("prompt") or "")
+        at, text = prompt.lower().find(needle), prompt
+        if at < 0:
+            text = _final_reply(run_dir, record)
+            at = text.lower().find(needle)
+        if at < 0:
+            continue
+        found.append({"runId": record["id"], "prompt": prompt, "status": record.get("status"),
+                      "startedAt": record.get("startedAt"), "snippet": _snippet(text, at, len(needle))})
+    found.sort(key=lambda item: str(item["startedAt"] or ""), reverse=True)
+    return found[:limit]
+
+
 class RunStorage:
     def __init__(self, data_root: Path):
         self.root = data_root.resolve()

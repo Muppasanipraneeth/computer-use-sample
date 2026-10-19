@@ -12,6 +12,44 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <!-- Shown from the first paint so the app never flashes before the welcome; main.js hides it at once when there's none. -->
+    <div class="welcome" id="welcome" aria-hidden="true">
+      <!-- Heavily blurred bars sharing one gradient: taller ones reach the brighter colours, so the glow peaks in the middle. -->
+      <svg class="welcome-aurora" viewBox="0 0 1200 600" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="aurora-fill" gradientUnits="userSpaceOnUse" x1="0" y1="600" x2="0" y2="0">
+            <stop class="aurora-1" offset="0" />
+            <stop class="aurora-2" offset="0.2" />
+            <stop class="aurora-3" offset="0.38" />
+            <stop class="aurora-4" offset="0.54" />
+            <stop class="aurora-5" offset="0.68" />
+            <stop class="aurora-6" offset="0.82" />
+            <stop class="aurora-7" offset="1" />
+          </linearGradient>
+          <filter id="aurora-blur" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="46" /></filter>
+        </defs>
+        <g fill="url(#aurora-fill)" filter="url(#aurora-blur)">
+          <rect x="-30" y="427" width="180" height="173" />
+          <rect x="60" y="402" width="180" height="198" />
+          <rect x="150" y="348" width="180" height="252" />
+          <rect x="240" y="257" width="180" height="343" />
+          <rect x="330" y="142" width="180" height="458" />
+          <rect x="420" y="41" width="180" height="559" />
+          <rect x="510" y="0" width="180" height="600" />
+          <rect x="600" y="41" width="180" height="559" />
+          <rect x="690" y="142" width="180" height="458" />
+          <rect x="780" y="257" width="180" height="343" />
+          <rect x="870" y="348" width="180" height="252" />
+          <rect x="960" y="402" width="180" height="198" />
+          <rect x="1050" y="427" width="180" height="173" />
+        </g>
+      </svg>
+      <div class="welcome-center">
+        <img class="welcome-logo" src="logo.svg" alt="" width="56" height="56" />
+        <h1 class="welcome-title"><span id="welcome-part"></span> <em class="welcome-name" id="welcome-name"></em></h1>
+        <p class="welcome-sub">Jarvis is here.</p>
+      </div>
+    </div>
     <div class="app" id="app">
       <aside class="sidebar" aria-label="Workspace">
         <div class="titlebar sidebar-top">
@@ -40,6 +78,8 @@
 
           <section class="section" aria-labelledby="chats-heading">
             <h2 class="section-title" id="chats-heading">Chats</h2>
+            <label class="chat-search"><span class="icon" data-icon="search"></span><input id="chat-search" type="search" placeholder="Search chats" aria-label="Search all chats" autocomplete="off" spellcheck="false" /><kbd data-shortcut="F"></kbd></label>
+            <ol class="recent-list search-results" id="search-results" hidden></ol>
             <ol class="recent-list" id="chat-list"></ol>
           </section>
 
@@ -80,10 +120,10 @@
             <div class="banner" id="offline-banner" hidden>
               <span class="icon" data-icon="plug"></span>
               <div>
-                <strong>Runner offline</strong>
-                <p>Start it from the repo root, then this window connects on its own.</p>
+                <strong id="offline-title">Jarvis's engine isn't running</strong>
+                <p id="offline-text">It restarts on its own in a few seconds. If this stays, use Settings → Models → Copy diagnostics.</p>
               </div>
-              <button type="button" class="chip-button" id="copy-runner-command"><code>pnpm dev:python</code></button>
+              <button type="button" class="chip-button" id="copy-runner-command">Copy diagnostics</button>
             </div>
             <div class="banner permissions" id="permissions-banner" hidden>
               <span class="icon" data-icon="key"></span>
@@ -243,6 +283,10 @@
               <span class="pref-text"><strong>Pause music while we talk</strong><span>Pauses Spotify and Apple Music, and lowers other sound while listening.</span></span>
               <input type="checkbox" class="switch" role="switch" data-pref="pauseMusic" />
             </label>
+            <label class="pref">
+              <span class="pref-text"><strong>Say hello when Jarvis opens</strong><span>A spoken greeting, plus anything that finished while you were away. You can answer straight away.</span></span>
+              <input type="checkbox" class="switch" role="switch" data-pref="greet" />
+            </label>
           </div>
           <div class="card">
             <div class="pref-text"><strong>Personality</strong><span>How Jarvis talks to you.</span></div>
@@ -267,6 +311,10 @@
             <label class="pref">
               <span class="pref-text"><strong>Show the Live view</strong><span>The panel on the right with the pages Jarvis reads and what it does on screen.</span></span>
               <input type="checkbox" class="switch" role="switch" data-pref="screenOpen" />
+            </label>
+            <label class="pref">
+              <span class="pref-text"><strong>Welcome animation and sound</strong><span>When Jarvis opens: the Professor, a greeting and a soft chime. Click or press any key to skip it.</span></span>
+              <input type="checkbox" class="switch" role="switch" data-pref="welcome" />
             </label>
           </div>
         </section>
@@ -351,8 +399,39 @@
         </section>
 
         <section class="card" id="key-cards"></section>
-        <p class="sheet-note">Keys are written to the repo's local <code>.env</code>; this window only sees whether one is saved. Restart the runner after saving a key.</p>
+        <p class="sheet-note">Keys are written to Jarvis's local <code>.env</code>; this window only sees whether one is saved. Tasks pick up a new key at their next start.</p>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h3>Troubleshooting</h3>
+              <p>Something not working? Copy a report (versions, permissions, recent logs; no keys or chats) and paste it to whoever is helping you.</p>
+            </div>
+            <div class="card-actions">
+              <button type="button" class="button ghost" id="open-logs">Open logs</button>
+              <button type="button" class="button ghost" id="open-setup">Setup checklist</button>
+              <button type="button" class="button" id="copy-diagnostics">Copy diagnostics</button>
+            </div>
+          </div>
         </section>
+        </section>
+      </form>
+    </dialog>
+
+    <dialog class="sheet" id="setup">
+      <form method="dialog" class="sheet-body">
+        <header class="sheet-head">
+          <div>
+            <h2>Let's set Jarvis up</h2>
+            <p>A few steps so tasks don't stop halfway. The first three matter; the rest are optional.</p>
+          </div>
+          <button type="submit" class="icon-button" aria-label="Close"><span class="icon" data-icon="close"></span></button>
+        </header>
+        <ol class="setup-list" id="setup-list"></ol>
+        <div class="form-actions">
+          <span class="form-status" id="setup-status"></span>
+          <button type="submit" class="button" id="setup-done">Done</button>
+        </div>
       </form>
     </dialog>
 
@@ -401,6 +480,17 @@
     <script src="icons.js"></script>
     <script src="markdown.js"></script>
     <script src="voice.js"></script>
-    <script src="app.js"></script>
+    <script src="welcome.js"></script>
+    <script src="state.js"></script>
+    <script src="sidebar.js"></script>
+    <script src="run-view.js"></script>
+    <script src="screen.js"></script>
+    <script src="composer.js"></script>
+    <script src="voice-ui.js"></script>
+    <script src="runs.js"></script>
+    <script src="setup.js"></script>
+    <script src="settings.js"></script>
+    <script src="wiring.js"></script>
+    <script src="main.js"></script>
   </body>
 </html>

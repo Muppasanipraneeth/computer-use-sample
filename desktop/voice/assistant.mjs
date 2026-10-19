@@ -241,7 +241,9 @@ function firstSentences(text, limit) {
   return out.trim().slice(0, limit);
 }
 
-export function resultInstructions(personality, profile) {
+export function resultInstructions(personality, profile, workspace = null) {
+  const name = typeof workspace?.name === "string" ? workspace.name.trim() : "";
+  const rules = typeof workspace?.instructions === "string" ? workspace.instructions.replace(/\s+/g, " ").trim().slice(0, 1500) : "";
   return [
     "You are Jarvis, a voice assistant. A task you ran for the user on their computer just finished; tell them the result out loud.",
     "If they asked a question or asked you to find something, say the answer itself: the key facts in up to four short sentences, the way you'd tell a friend. Don't read lists, links or sources aloud; the full report is on screen.",
@@ -249,6 +251,8 @@ export function resultInstructions(personality, profile) {
     "Base it only on the report you are given; never claim more than it says.",
     persona(personality),
     ...aboutUser(profile),
+    // The task ran in one of the user's workspaces: its instructions apply to what Jarvis says too (tone, language).
+    ...(name && rules ? [`The task ran in their workspace "${name}", whose instructions apply to how you speak as well: ${rules}`] : []),
     "Reply with only the words to say.",
   ].join("\n");
 }

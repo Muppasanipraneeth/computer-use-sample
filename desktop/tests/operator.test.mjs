@@ -20,7 +20,31 @@ import {
   validateAuthUpdates,
   wireAttachments,
   wireWorkspace,
+  usageText,
 } from "../operator.mjs";
+
+test("usage reads as tokens and cost, and older runs without it show nothing", () => {
+  const run = projectRun({ run: { id: "r", status: "completed", usage: { inputTokens: 11200, outputTokens: 1250, cachedTokens: 9000, costUsd: 0.0437, turns: 3 }, modelSwitches: [{ to: "omp:anthropic/claude-opus-5-5" }] } });
+  assert.equal(run.usageLabel, "12.4k tokens · $0.04");
+  assert.equal(run.switchedTo, "omp:anthropic/claude-opus-5-5");
+  assert.equal(projectRun({ run: { id: "o", status: "completed" } }).usageLabel, "");
+  assert.equal(usageText({ inputTokens: 300, outputTokens: 20, costUsd: 0.001 }), "320 tokens · <$0.01");
+  assert.equal(usageText({ inputTokens: 300, outputTokens: 20, costUsd: null }), "320 tokens");
+});
+
+test("auto mode's model choice and switch read as plain steps", () => {
+  const run = projectRun({
+    run: { id: "m", status: "running" },
+    events: [
+      event("c", "run_progress", "Chose a model for this task.", { detail: "omp:anthropic/claude-haiku-5-5 · quick question" }),
+      event("s", "run_progress", "Switched to a stronger model.", { level: "warn", detail: "omp:anthropic/claude-opus-5-5 · two failed steps" }),
+    ],
+  });
+  assert.deepEqual(run.steps.map(({ kind, title }) => ({ kind, title })), [
+    { kind: "model", title: "Using claude-haiku-5-5 (quick question)" },
+    { kind: "model", title: "Switched to claude-opus-5-5 (two failed steps)" },
+  ]);
+});
 
 test("a workspace reaches the runner as a trimmed name and instructions, or not at all", () => {
   const body = startRunBody("any-task", "Draft a reply", "omp:a/b", [], { id: "w1", name: "  Glymph work ", instructions: " Use my work Gmail. ", folder: { path: "/x" } });

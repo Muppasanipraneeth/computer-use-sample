@@ -252,6 +252,8 @@ const STEER_MESSAGE = "User instruction added.";
 // Ask-the-user events (runner.py): the question shows as Jarvis asking, the reply as the user's words.
 const ASK_MESSAGES = new Set(["Waiting for your answer.", "Approval requested."]);
 const REPLY_TITLES = { "You answered.": null, "You approved.": "Approved", "You declined.": "Declined" };
+// Auto mode (runner model routing): which model a task started on, and any move to a stronger one. Detail is "<model> · <reason>".
+const MODEL_MESSAGES = { "Chose a model for this task.": "Using", "Switched to a stronger model.": "Switched to" };
 const TURN_MESSAGE = /turn (\d+) completed/i;
 // One alternation so labels come out in code order. `display(web.screenshot())` must precede the generic `display(`.
 const CALL =
@@ -481,6 +483,12 @@ function eventStep(event, browsingHost = null) {
       if (message === STEER_MESSAGE) return { ...base, kind: "steer", title: detail || message };
       if (ASK_MESSAGES.has(message)) return { ...base, kind: "question", title: detail.split("\n")[0] || message, detail };
       if (Object.hasOwn(REPLY_TITLES, message)) return { ...base, kind: "steer", title: REPLY_TITLES[message] ?? (detail || message) };
+      if (Object.hasOwn(MODEL_MESSAGES, message)) {
+        // "omp:anthropic/claude-haiku-5-5 · quick question" → "Using claude-haiku-5-5 (quick question)".
+        const [model, ...reason] = detail.split(" · ");
+        const name = model.replace(/^omp:/, "").replace(/^[^/]*\//, "");
+        return { ...base, kind: "model", title: `${MODEL_MESSAGES[message]} ${name || "another model"}${reason.length ? ` (${reason.join(" · ")})` : ""}`, detail };
+      }
       const turn = message.match(TURN_MESSAGE);
       if (turn) return { ...base, kind: "turn", title: `Step ${turn[1]}`, detail };
       return { ...base, kind: base.level === "warn" ? "warning" : "note", title: message, detail };
@@ -513,6 +521,25 @@ function pendingQuestion(question) {
 
 function isRunningStatus(status) {
   return !TERMINAL_STATUSES.includes(status);
+}
+
+/** Token counts and cost for the run so far, or null when the runner didn't record any (older runs). */
+function runUsage(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const count = (value) => (Number.isFinite(value) && value > 0 ? Math.round(value) : 0);
+  const inputTokens = count(usage.inputTokens);
+  const outputTokens = count(usage.outputTokens);
+  if (inputTokens + outputTokens === 0) return null;
+  return { inputTokens, outputTokens, cachedTokens: count(usage.cachedTokens), turns: count(usage.turns), costUsd: Number.isFinite(usage.costUsd) ? usage.costUsd : null };
+}
+
+/** "12.4k tokens · $0.05": the short form the chat and the live view show. */
+export function usageText(usage) {
+  if (!usage) return "";
+  const total = usage.inputTokens + usage.outputTokens;
+  const tokens = total >= 1000 ? `${(total / 1000).toFixed(total >= 100_000 ? 0 : 1)}k tokens` : `${total} tokens`;
+  if (usage.costUsd === null) return tokens;
+  return `${tokens} · ${usage.costUsd < 0.01 ? "<$0.01" : `$${usage.costUsd.toFixed(2)}`}`;
 }
 
 /** Stateless view of one run: the renderer diffs steps by id, so the same detail can be projected on every poll. */
@@ -573,6 +600,9 @@ export function projectRun(detail) {
     steps,
     controlsScreen: screen,
     paused: run.paused === true,
+    usage: runUsage(run.usage),
+    usageLabel: usageText(runUsage(run.usage)),
+    switchedTo: Array.isArray(run.modelSwitches) && run.modelSwitches.length > 0 ? String(run.modelSwitches.at(-1)?.to ?? "") : null,
     question: isRunningStatus(status) ? pendingQuestion(run.question) : null,
     attachments: Array.isArray(run.attachments)
       ? run.attachments.filter((item) => item && typeof item.path === "string").map((item) => ({ kind: item.kind === "folder" ? "folder" : "image", path: item.path, name: String(item.name || path.basename(item.path)) }))

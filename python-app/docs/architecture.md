@@ -35,12 +35,21 @@ Connected apps enforce approval regardless of the model: the [apps gateway](../a
 
 A run holds at most one question; a second asker waits until the first is answered. The pending question is the run record's `question` (`{"id", "kind", "text", "options", "detail", "createdAt"}`, approvals always offering `["approve", "deny"]`), `null` otherwise, and is cleared by the answer, Stop, or the terminal record. Events: "Waiting for your answer." or "Approval requested." (warn), then "You answered." / "You approved." (ok) or "You declined." (warn).
 
+## Auto model and usage
+
+A start request's `model` may be `"auto"`. Before admission, [`route_task`](../app/model_routing.py) picks a tier from the request alone (no model call): **quick** (`JARVIS_QUICK_MODEL`, default `omp:anthropic/claude-haiku-5-5`) for a short factual question or a sum with no attachments, action words, personal data or app/screen verbs; **strong** (`JARVIS_STRONG_MODEL`, default `omp:anthropic/claude-opus-5-5`) for driving desktop apps or the screen, code, multi-step work across apps or sites, attachments, requests over 400 characters, practice labs and Unreal; **fast** (`JARVIS_FAST_MODEL`, default `omp:anthropic/claude-sonnet-5-5`) for everything else. The keyword lists and why each tier exists live in that one module. An omp model counts only when `omp models` lists it; a missing tier falls to the nearest available tier above, then below (400 `model_unavailable` when none is). The run record's `model` is the starting model, `modelChoice` is `{"model", "tier", "reason"}` (`null` for a chosen model, absent on older records), and the run emits "Chose a model for this task." (ok) with detail `<model name> · <reason>`, e.g. `claude-haiku-5-5 · quick question`.
+
+Escalation ([`run_model.py`](../app/run_model.py)) is the safety net: before the next model call the run moves one tier up (quick → fast → strong, so at most two switches) after two code steps in a row that raised or hit the step deadline, two replies that were not usable actions, ten turns on one model without a final answer, or the model asking: omp replies `{"action":"escalate","reason":…}`, and the Responses, Claude and compatible loops get an `escalate` tool, offered only while a stronger model remains. Each model starts with fresh counts. The conversation carries over: omp replays its history in the prompt, Responses continues `previous_response_id`, and Claude/compatible rebuild every request from the turns kept so far. Escalation stays within the starting model's provider (a stronger tier on another provider is skipped). Each switch updates `model`, appends `{"at", "from", "to", "reason"}` to `modelSwitches`, and emits "Switched to a stronger model." (warn) with detail `<to> · <reason>`.
+
+Every loop adds each model call's tokens to the run record's `usage`: `{"inputTokens", "outputTokens", "cachedTokens", "costUsd", "turns"}`, persisted as the run goes (absent on older records). `inputTokens` is the whole prompt including cached parts, `cachedTokens` the part read from cache. omp's `--mode json` `message_end` events carry `usage: {"input", "output", "cacheRead", "cacheWrite", "cost": {"total"}}`, so omp runs also get `costUsd`; the Responses, Claude and compatible APIs report tokens only, leaving `costUsd` `null`.
+
 ## Supporting modules
 
 | Location | Responsibility |
 | --- | --- |
 | [`api.py`](../app/api.py) | FastAPI routes, capabilities, event streams, and artifact serving. |
 | [`runner.py`](../app/runner.py) | Admission up to the concurrent-run limit, lifecycle, cancellation, event publication, and persistence. |
+| [`model_routing.py`](../app/model_routing.py) and [`run_model.py`](../app/run_model.py) | Auto's starting tier, escalation, and token usage. |
 | [`screen.py`](../app/screen.py) and [`local_browser_host.py`](../app/local_browser_host.py) | The screen lock shared by concurrent runs, and their shared local background browser. |
 | [`browser.py`](../app/browser.py) and [`scenario_runtime.py`](../app/scenario_runtime.py) | Chromium, local lab server, execution worker, and final screenshots. |
 | [`lab_catalog.py`](../app/lab_catalog.py) | Read the shared catalog and add Python tool instructions. |

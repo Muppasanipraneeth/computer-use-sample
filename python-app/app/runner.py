@@ -6,7 +6,7 @@ import copy
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -15,6 +15,8 @@ from .attachments import copy_images, plan_attachments, resolve_attachments
 from .config import Settings
 from .errors import RunnerCoreError
 from .local_browser_host import LocalBrowserHost
+from .model_routing import AutoPlan, model_name, plan_auto, route_task
+from .model_selection import AUTO_MODEL, parse_model_selection
 from .models import (
     AnswerRunRequest,
     BrowserScreenshotArtifact,
@@ -25,17 +27,15 @@ from .models import (
     RunRecord,
     StartRunRequest,
     SteerRunRequest,
+    timestamp,
     validate_wire,
 )
 from .processes import await_active
+from .run_model import empty_usage
 from .screen import RunScreen, ScreenLock
 from .storage import RunStorage, run_in_thread, store_screenshot, validate_run_id
 
 logger = logging.getLogger(__name__)
-
-
-def timestamp() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _set_event() -> asyncio.Event:
@@ -66,6 +66,8 @@ class InternalRun:
     answer: asyncio.Future | None = None
     # The user's workspace ({"name", "instructions"}) from the start request; the record keeps only its name.
     workspace: dict[str, str] | None = None
+    # Auto's stronger models, weakest first, which the run may escalate to (run_model.RunModel); () for a chosen model.
+    stronger_models: tuple[str, ...] = ()
 
 
 SCREEN_WAIT_EVENT = {"type": "run_progress", "level": "warn", "message": "Waiting for the screen…",
@@ -97,6 +99,17 @@ class RunnerManager:
         raise RunnerCoreError(f"Unknown scenario: {scenario_id}", code="unknown_scenario", status_code=404,
                               hint="Pick a scenario from /api/scenarios before starting a run.")
 
+    async def _plan_auto(self, request: dict, scenario: dict, attachments: list[dict]) -> AutoPlan:
+        """Auto's starting model from the task (model_routing.route_task) and the models it may escalate to."""
+        tier, reason = route_task(request["prompt"], attachments, scenario,
+                                  request.get("workspace", {}).get("instructions", ""))
+        models = self.settings.tier_models()
+        selectors: set[str] = set()
+        if any(parse_model_selection(model).provider == "omp" for model in models.values()):
+            from .omp_client import list_omp_models
+            selectors = {model["selector"] for model in (await list_omp_models())["models"]}
+        return plan_auto(models, tier, reason, selectors)
+
     async def start_run(self, input: dict) -> dict:
         request = validate_wire(StartRunRequest, input)
         # Validate attachments before admission so a bad path never allocates a run.
@@ -111,6 +124,9 @@ class RunnerManager:
             raise RunnerCoreError("Local PyAutoGUI requires a visible browser.", code="visible_browser_required",
                                   status_code=400, hint="Use browserMode: headful for local PyAutoGUI execution.")
         scenario = self.scenario(request["scenarioId"])
+        requested_model = request.get("model", self.settings.default_model)
+        # Before the run limit check: no await may come between that check and admission.
+        auto = await self._plan_auto(request, scenario, resolved) if requested_model.strip() == AUTO_MODEL else None
         limit = self.settings.max_concurrent_runs
         if len(self.active) >= limit:
             raise RunnerCoreError(f"Jarvis is already doing {limit} task{'' if limit == 1 else 's'}. Stop one or wait for it to finish.",
@@ -120,10 +136,12 @@ class RunnerManager:
         planned = plan_attachments(resolved, self.storage.run_dir(run_id) / "attachments", 0)
         record = validate_wire(RunRecord, {
             "id": run_id, "scenarioId": scenario["id"], "labId": scenario["labId"], "browserMode": "headful",
-            "maxResponseTurns": request.get("maxResponseTurns", 24), "model": request.get("model", self.settings.default_model),
+            "maxResponseTurns": request.get("maxResponseTurns", 24), "model": auto.model if auto else requested_model,
             "prompt": request["prompt"], "status": "running", "startedAt": timestamp(), "paused": False,
             "attachments": planned, "question": None,
             "workspace": {"name": request["workspace"]["name"]} if "workspace" in request else None,
+            "modelSwitches": [], "usage": empty_usage(),
+            "modelChoice": {"model": auto.model, "tier": auto.tier, "reason": auto.reason} if auto else None,
         })
         # Reserve admission before the first await, including workspace copying.
         started = asyncio.Event()
@@ -135,16 +153,22 @@ class RunnerManager:
                 "run": record, "scenario": scenario, "workspacePath": str(self.storage.workspace(run_id)),
                 "events": [], "eventStreamUrl": f"/api/runs/{run_id}/events", "replayUrl": f"/api/runs/{run_id}/replay",
             })
-            context = InternalRun(detail=detail, workspace=request.get("workspace"))
+            context = InternalRun(detail=detail, workspace=request.get("workspace"),
+                                  stronger_models=auto.stronger_models if auto else ())
             self.contexts[run_id] = context
             await self.storage.persist(detail)
             turn_limit = "no turn limit" if record["maxResponseTurns"] is None else f"{record['maxResponseTurns']} turns"
             await self.emit_event(context, {"type": "run_started", "level": "ok", "message": f"Run {run_id} started.",
                                             "detail": f"{scenario['title']} · headful · {turn_limit}"})
+            if auto:
+                await self.emit_event(context, {"type": "run_progress", "level": "ok", "message": "Chose a model for this task.",
+                                                "detail": f"{model_name(auto.model)} · {auto.reason}"})
             await self.emit_event(context, {"type": "workspace_prepared", "level": "ok",
                                             "message": "Workspace copied into mutable run directory.",
                                             "detail": detail["workspacePath"]})
             context.execution = asyncio.create_task(self._execute(context), name=f"run:{run_id}")
+            logger.info("Run %s started: model=%s scenario=%s prompt=%r", run_id, record["model"], scenario["id"],
+                        record["prompt"][:120])
             return copy.deepcopy(detail)
         except BaseException:
             self.active.pop(run_id, None)
@@ -394,6 +418,7 @@ class RunnerManager:
             next_turn=lambda: self._next_turn(internal),
             ask=lambda text, **kwargs: self._ask(internal, text, **kwargs),
             screen=internal.screen, browser_host=self.browser_host, workspace=internal.workspace,
+            stronger_models=internal.stronger_models,
         )
         try:
             await (self.executor or execute_scenario)(context)
@@ -492,6 +517,13 @@ class RunnerManager:
             context.detail["events"].append(failure)
             self._update_counts(context.detail)
             self._notify(context, failure)
+        finally:
+            usage = context.detail["run"].get("usage") or record.get("usage") or {}
+            logger.info("Run %s finished: status=%s model=%s duration=%.1fs input_tokens=%s output_tokens=%s "
+                        "cached_tokens=%s cost_usd=%s turns=%s", record["id"], record["status"],
+                        context.detail["run"].get("model", record["model"]), duration / 1000,
+                        usage.get("inputTokens", 0), usage.get("outputTokens", 0), usage.get("cachedTokens", 0),
+                        usage.get("costUsd"), usage.get("turns", 0))
 
     async def capture_screenshot(self, context: InternalRun, session: Any, label: str, observation: dict | None = None) -> dict:
         if observation:

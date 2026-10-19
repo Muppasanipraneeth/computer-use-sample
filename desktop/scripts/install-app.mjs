@@ -2,16 +2,20 @@
 // /Applications isn't writable), so Jarvis opens from Spotlight, Launchpad and the Dock like any Mac app.
 //
 // It follows Electron's manual distribution layout: a renamed copy of Electron.app with the app's code in
-// Contents/Resources/app (https://www.electronjs.org/docs/latest/tutorial/application-distribution). The installed
-// app still uses this repo for the Python runner, models in your omp accounts and the .env file; jarvis.json records
-// where the repo is, and the app starts the runner itself when it isn't running. Run this again after pulling changes.
+// Contents/Resources/app (https://www.electronjs.org/docs/latest/tutorial/application-distribution). The Python
+// runner's source, the practice labs and a `uv` binary go in Contents/Resources/runner; on first launch the app
+// installs the runner's packages into its userData folder (runner-process.mjs prepareRunner), so it no longer needs
+// this repo. Keys move to userData's .env (copied from the repo's once). Run this again after pulling changes.
+//
+// JARVIS_INSTALL_DIR installs into another folder instead of /Applications (for testing: the running Jarvis is left
+// alone and permissions are never reset); JARVIS_USER_DATA is the userData folder the .env is copied to.
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 
-import { brandElectronApp, buildControlKey, desktopDir, run, signApp } from "./bundle.mjs";
+import { brandElectronApp, buildControlKey, bundleRunner, desktopDir, run, signApp } from "./bundle.mjs";
 
 if (process.platform !== "darwin") {
   console.error("pnpm desktop:install builds a macOS app. On Windows and Linux, start Jarvis with pnpm desktop.");
@@ -19,6 +23,8 @@ if (process.platform !== "darwin") {
 }
 
 const repoRoot = path.resolve(desktopDir, "..");
+const customDestination = process.env.JARVIS_INSTALL_DIR?.trim();
+const userData = process.env.JARVIS_USER_DATA?.trim() || path.join(os.homedir(), "Library", "Application Support", "Jarvis");
 const build = path.join(desktopDir, ".dev", "install", "Jarvis.app");
 console.log("Building Jarvis.app…");
 brandElectronApp(build);
@@ -36,7 +42,9 @@ for (const file of readdirSync(desktopDir).filter((name) => name.endsWith(".mjs"
 }
 const manifest = JSON.parse(readFileSync(path.join(desktopDir, "package.json"), "utf8"));
 writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "jarvis", productName: "Jarvis", version: manifest.version, type: "module", main: "main.mjs" }, null, 2));
-writeFileSync(path.join(app, "jarvis.json"), JSON.stringify({ repoRoot }, null, 2));
+writeFileSync(path.join(app, "jarvis.json"), JSON.stringify({ mode: "standalone" }, null, 2));
+const runnerBytes = bundleRunner(path.join(resources, "runner"));
+console.log(`Bundled the runner (${(runnerBytes / 1024 / 1024).toFixed(1)} MB with uv).`);
 
 // Runtime dependencies, copied out of pnpm's symlinked store: the speech engine and its native macOS build.
 const require = createRequire(path.join(desktopDir, "package.json"));
@@ -50,6 +58,18 @@ for (const [name, from] of [["sherpa-onnx-node", sherpa], [`sherpa-onnx-darwin-$
 const controlKey = buildControlKey();
 if (controlKey) cpSync(controlKey, path.join(app, "native", "control-key"));
 signApp(build);
+// The uv binary inside must not break the seal: macOS ties Jarvis's permissions to a valid signature.
+run("codesign", ["--verify", "--deep", "--strict", build]);
+
+// The installed app keeps its keys in userData/.env; bring over the repo's the first time.
+const repoEnv = path.join(repoRoot, ".env");
+const userEnv = path.join(userData, ".env");
+if (existsSync(repoEnv) && !existsSync(userEnv)) {
+  mkdirSync(userData, { recursive: true });
+  copyFileSync(repoEnv, userEnv);
+  chmodSync(userEnv, 0o600); // API keys: readable by this user only
+  console.log(`Copied ${repoEnv} to ${userEnv}; Jarvis's Settings now edit that file.`);
+}
 
 function writable(directory) {
   try {
@@ -61,7 +81,7 @@ function writable(directory) {
     return false;
   }
 }
-const applications = writable("/Applications") ? "/Applications" : path.join(os.homedir(), "Applications");
+const applications = customDestination ? path.resolve(customDestination) : writable("/Applications") ? "/Applications" : path.join(os.homedir(), "Applications");
 mkdirSync(applications, { recursive: true });
 const installed = path.join(applications, "Jarvis.app");
 
@@ -77,7 +97,7 @@ function designatedRequirement(app) {
 const previous = existsSync(installed) ? designatedRequirement(installed) : null;
 const next = designatedRequirement(build);
 
-run("osascript", ["-e", 'tell application "System Events" to if exists process "Jarvis" then tell application "Jarvis" to quit']);
+if (!customDestination) run("osascript", ["-e", 'tell application "System Events" to if exists process "Jarvis" then tell application "Jarvis" to quit']);
 rmSync(installed, { recursive: true, force: true });
 run("ditto", [build, installed]);
 rmSync(path.dirname(build), { recursive: true, force: true });
@@ -86,7 +106,7 @@ rmSync(path.dirname(build), { recursive: true, force: true });
 // with the stable signing identity, or a recreated certificate), the old entries can't match the new app, yet
 // System Settings still shows Jarvis switched on, and turning it on again changes nothing. Clearing them makes
 // macOS ask afresh. With an unchanged requirement (every normal update) permissions are kept.
-if (previous && next && previous !== next) {
+if (!customDestination && previous && next && previous !== next) {
   for (const service of ["Accessibility", "ScreenCapture", "Microphone"]) {
     try {
       run("tccutil", ["reset", service, "dev.jarvis.desktop"]);

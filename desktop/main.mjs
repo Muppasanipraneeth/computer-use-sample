@@ -2,10 +2,11 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, nativeTheme, net, protocol, session, shell, systemPreferences, utilityProcess } from "electron";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, nativeTheme, net, protocol, session, shell, systemPreferences, utilityProcess } from "electron";
 
 import {
   accountsFromOmpStdout,
@@ -48,14 +49,26 @@ import { readProfile, writeProfile } from "./profile.mjs";
 import { addMemory, readMemories, removeMemory } from "./memory.mjs";
 import { describeSchedule, dueRoutines, nextRunAt, readRoutines, updateRoutine, validateRoutine, writeRoutines } from "./routines.mjs";
 import { createComposioClient, disconnectedApps } from "./connections.mjs";
-import { loginShellPath, startRunner } from "./runner-process.mjs";
+import { devRunner, loginShellPath, prepareRunner, standaloneRunner, startRunner } from "./runner-process.mjs";
+import { createLogger, logDirectory, redact, tailFile } from "./logger.mjs";
+
+// desktop.log beside the runner's runner.log; "Copy diagnostics" in Settings bundles the tail of both.
+const log = createLogger();
+process.on("uncaughtException", (error) => log.error("uncaught exception", error));
+process.on("unhandledRejection", (reason) => log.error("unhandled rejection", reason));
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
-// Installed with `pnpm desktop:install`, the code lives inside Jarvis.app and jarvis.json says where the repo is
-// (runner, .env, Playwright's Chromium); run from the repo, it is simply the parent folder.
+// Fix the app name so userData resolves to ~/Library/Application Support/Jarvis.
+app.setName("Jarvis");
+// Installed with `pnpm desktop:install`, the code lives inside Jarvis.app (jarvis.json: { mode: "standalone" }) with
+// the runner bundled in Contents/Resources/runner, and .env, the runner's venv and its data in userData. Run from the
+// repo, everything is the repo's.
 const installedConfig = path.join(directory, "jarvis.json");
-const repoRoot = existsSync(installedConfig) ? JSON.parse(readFileSync(installedConfig, "utf8")).repoRoot : path.resolve(directory, "..");
-const envPath = path.join(repoRoot, ".env");
+const standalone = existsSync(installedConfig) && JSON.parse(readFileSync(installedConfig, "utf8")).mode === "standalone";
+const runnerSetup = standalone
+  ? standaloneRunner({ runnerRoot: path.join(process.resourcesPath, "runner"), userData: app.getPath("userData") })
+  : devRunner(path.resolve(directory, ".."));
+const envPath = runnerSetup.envFile;
 // Opened from Finder or the Dock, the app gets a bare PATH; omp, uv and Homebrew tools live on the login shell's.
 if (app.isPackaged || existsSync(installedConfig)) process.env.PATH = loginShellPath();
 const runnerBase = assertRunnerBase(process.env.RUNNER_BASE_URL ?? "http://127.0.0.1:4041");
@@ -65,13 +78,13 @@ const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"];
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const TITLE_BAR_HEIGHT = 48;
 
-// Fix the app name so userData resolves to ~/Library/Application Support/Jarvis.
-app.setName("Jarvis");
-
 // The runner Jarvis started itself (null when the user runs one, or none is up yet).
 let runner = null;
 let runnerStarting = false;
 let runnerRetryAt = 0;
+// The installed app's first-launch runner setup: the latest prepareRunner progress event while it runs
+// ({ stage, status, message, output? }), { error } after a failed setup, null otherwise.
+let runnerPreparing = null;
 
 async function ensureRunner() {
   if (runner || runnerStarting || Date.now() < runnerRetryAt) return;
@@ -84,17 +97,33 @@ async function ensureRunner() {
     } catch {
       // Not running: start it below.
     }
-    runner = await startRunner(repoRoot, {
+    const prepared = await prepareRunner(runnerSetup, {
+      onProgress: (progress) => {
+        runnerPreparing = progress;
+        if (progress.output) return;
+        if (progress.status === "done") log.info(`runner setup: ${progress.stage} finished in ${(progress.ms / 1000).toFixed(1)} s`);
+        else log.info(`runner setup: ${progress.stage} started`);
+      },
+    });
+    if (!prepared.ok) {
+      runnerPreparing = { error: prepared.error };
+      runnerRetryAt = Date.now() + 30_000;
+      log.error(`runner setup failed${prepared.stage ? ` (${prepared.stage})` : ""}`, prepared.error);
+      return;
+    }
+    runnerPreparing = null;
+    runner = await startRunner(runnerSetup, {
       onExit: (code, stderr) => {
         runner = null;
         // Don't restart in a tight loop if it keeps failing (missing venv, port taken by something else…).
         if (code) runnerRetryAt = Date.now() + 30_000;
-        if (code && stderr) console.error(`[runner] exited with ${code}: ${stderr.trim().split("\n").at(-1)}`);
+        if (code) log.error(`runner exited with ${code}`, stderr.trim().split("\n").at(-1));
       },
     });
+    log.info(`runner started (${runnerSetup.mode})`);
   } catch (error) {
     runnerRetryAt = Date.now() + 30_000;
-    console.error(`[runner] ${error instanceof Error ? error.message : error}`);
+    log.error("runner failed to start", error);
   } finally {
     runnerStarting = false;
   }
@@ -201,6 +230,7 @@ function handle(channel, work) {
     try {
       return await work(...args);
     } catch (error) {
+      log.warn(`${channel} failed`, error);
       return failure(error);
     }
   });
@@ -480,6 +510,7 @@ async function understand({ text, source, running, lastReply }) {
     rememberTurn({ role: "jarvis", text: reply.say, task: reply.prompt || undefined });
   }
   voiceDebug(`understood in ${((performance.now() - started) / 1000).toFixed(1)} s (model lookup ${((lookedUp - started) / 1000).toFixed(1)} s, ${model ?? "no model"}): ${reply.kind} "${reply.say}"`);
+  if (!reply.understood) log.warn(`voice understanding fell back to the raw words (${model ? "model reply unusable or slow" : "no understanding model"})`);
   return reply;
 }
 
@@ -533,7 +564,7 @@ async function summarize(run) {
   const model = await lookUpUnderstandingModel();
   if (model) {
     try {
-      const instructions = resultInstructions(voicePrefs.personality, await userContext());
+      const instructions = resultInstructions(voicePrefs.personality, await userContext(), run.workspace ?? null);
       const completed = await runOmp(["-p", "--no-tools", "--no-session", "--no-extensions", "--no-skills", "--no-rules", "--thinking", "off", "--model", model, "--system-prompt", instructions, resultRequest(run)], 10_000);
       const line = completed.code === 0 ? parseSpokenLine(completed.stdout) : "";
       if (line) return line;
@@ -559,6 +590,7 @@ async function startVoice(owner) {
   const failed = (code, wasCurrent) => {
     if (wasCurrent) {
       stopVoice();
+      if (code) log.error(`voice engine exited with code ${code}`);
       send("voice:state", { state: "off", error: code ? "The voice engine stopped unexpectedly." : undefined });
     }
   };
@@ -567,6 +599,7 @@ async function startVoice(owner) {
       if (message.type === "ready") resolve({ ok: true });
       else if (message.type === "error") {
         resolve({ ok: false, error: message.message });
+        log.error("voice engine error", message.message);
         send("voice:state", { state: "error", error: message.message });
       } else if (message.type === "state") {
         workerState = message.state;
@@ -607,6 +640,7 @@ async function startVoice(owner) {
 }
 
 app.whenReady().then(() => {
+  log.info(`Jarvis ${app.getVersion()} started (Electron ${process.versions.electron}, ${process.platform} ${os.release()})`);
   protocol.handle("shot", serveScreenshot);
   if (process.platform === "darwin") app.dock?.setIcon(APP_ICON);
   // Voice needs the microphone; nothing in Jarvis uses the camera. Other permissions keep Electron's defaults.
@@ -676,6 +710,15 @@ app.whenReady().then(() => {
 
   // Settings → Voice: the English Kokoro speakers Jarvis can talk with. The choice comes back through voice:prefs.
   ipcMain.handle("voice:list", () => VOICES.map(({ id, name, accent, gender }) => ({ id, name, accent, gender })));
+
+  // The welcome plays once per app launch: on macOS closing the window keeps Jarvis running, and reopening it
+  // shouldn't greet again.
+  let welcomed = false;
+  ipcMain.handle("app:first-show", () => {
+    const first = !welcomed;
+    welcomed = true;
+    return first;
+  });
 
   // Settings → Profile: who the user is, for the voice prompts above and (read from the same file) the runner's tasks.
   ipcMain.handle("profile:get", () => readProfile(app.getPath("userData")));
@@ -757,13 +800,52 @@ app.whenReady().then(() => {
     return { ok: true };
   });
 
+  // Settings → Troubleshooting: everything needed to understand a problem, with keys redacted by the logger.
+  handle("diagnostics:copy", async () => {
+    const dir = logDirectory();
+    let health = "offline";
+    try {
+      health = (await requestJson("GET", "/health", undefined, 2_000)).status === 200 ? "online" : "error";
+    } catch {
+      // stays "offline"
+    }
+    const env = readAuthEnv(await readEnvFile(), process.env);
+    const configured = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "COMPOSIO_API_KEY", "CLOUDFLARE_API_TOKEN"].filter((key) => env[key]).join(", ") || "none";
+    const permissions =
+      process.platform === "darwin"
+        ? `accessibility ${systemPreferences.isTrustedAccessibilityClient(false) ? "on" : "off"}, screen ${systemPreferences.getMediaAccessStatus("screen")}, microphone ${systemPreferences.getMediaAccessStatus("microphone")}`
+        : "n/a";
+    const report = [
+      `Jarvis ${app.getVersion()} · Electron ${process.versions.electron} · ${process.platform} ${os.release()} ${process.arch}`,
+      `Runner ${runnerBase}: ${health} (started by Jarvis: ${Boolean(runner)})`,
+      `Permissions: ${permissions}`,
+      `Keys set (names only): ${configured}`,
+      `Voice: ${voice ? workerState : "off"} · understanding model: ${understandingModel ?? "none"}`,
+      "",
+      "--- desktop.log (last 150 lines) ---",
+      tailFile(path.join(dir, "desktop.log"), 150) || "(empty)",
+      "",
+      "--- runner.log (last 150 lines) ---",
+      tailFile(path.join(dir, "runner.log"), 150) || "(empty)",
+    ].join("\n");
+    // The runner's log is redacted when written too; this catches anything that slipped into either file.
+    clipboard.writeText(redact(report));
+    log.info("diagnostics copied");
+    return { ok: true, bytes: report.length };
+  });
+  handle("logs:open", async () => {
+    await mkdir(logDirectory(), { recursive: true });
+    const error = await shell.openPath(logDirectory());
+    return error ? { ok: false, error } : { ok: true };
+  });
+
   handle("runner:health", async () => {
     try {
       const { status } = await requestJson("GET", "/health", undefined, 3_000);
       return { ok: true, online: status === 200, base: runnerBase, starting: runnerStarting };
     } catch {
       if (!runner && !runnerStarting) void ensureRunner();
-      return { ok: true, online: false, base: runnerBase, starting: runnerStarting };
+      return { ok: true, online: false, base: runnerBase, starting: runnerStarting, setup: runnerPreparing };
     }
   });
 
@@ -809,6 +891,15 @@ app.whenReady().then(() => {
     const { status, payload } = await requestJson("POST", `/api/runs/${runId}/stop`);
     if (status >= 400) return { ok: false, error: runnerErrorText(payload) };
     return { ok: true };
+  });
+
+  // Sidebar search: the runner looks through every saved run's request and answer.
+  handle("runs:search", async (query) => {
+    const text = String(query ?? "").trim();
+    if (text.length < 2) return { ok: true, results: [] };
+    const { status, payload } = await requestJson("GET", `/api/runs/search?q=${encodeURIComponent(text.slice(0, 200))}&limit=30`, undefined, 8_000);
+    if (status !== 200 || !Array.isArray(payload)) return { ok: false, error: runnerErrorText(payload) };
+    return { ok: true, results: payload.filter((item) => typeof item?.runId === "string").map(({ runId, prompt, status: runStatus, startedAt, snippet }) => ({ runId, prompt: String(prompt ?? ""), status: String(runStatus ?? ""), startedAt, snippet: String(snippet ?? "") })) };
   });
 
   // Deleting a chat removes its runs' saved files (screenshots, workspace copies) from the runner too.
@@ -904,7 +995,7 @@ app.whenReady().then(() => {
   // A task step using the background browser finishes first; the window hears it is waiting so it can say so.
   ipcMain.handle("browser:signin", async (event, url) => {
     try {
-      return await openSignInBrowser({ url, userData: app.getPath("userData"), repoRoot, onWaiting: () => event.sender.send("browser:signin-waiting") });
+      return await openSignInBrowser({ url, userData: app.getPath("userData"), runnerVenv: runnerSetup.venv, onWaiting: () => event.sender.send("browser:signin-waiting") });
     } catch (error) {
       return failure(error);
     }

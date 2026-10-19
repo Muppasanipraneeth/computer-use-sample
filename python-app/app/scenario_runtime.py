@@ -42,6 +42,8 @@ class RunExecutionContext:
     browser_host: LocalBrowserHost
     # The user's workspace for this run ({"name", "instructions"}), or None.
     workspace: dict[str, str] | None = None
+    # Auto's stronger models (same provider as detail["run"]["model"]), weakest first, which the loop may escalate to.
+    stronger_models: tuple[str, ...] = ()
 
 
 def browser_profile_directory() -> str:
@@ -126,15 +128,19 @@ async def execute_scenario(context: RunExecutionContext) -> None:
             return await context.ask(text, kind="approval", detail=detail) == "approve"
 
     async def run_model(active_instructions: str) -> dict[str, Any]:
+        stronger_models = context.stronger_models
         if selection.provider == "openai":
             return await run_responses_code_loop(context=context, session=session, instructions=active_instructions,
-                                                 max_response_turns=run["maxResponseTurns"], client=client)
+                                                 max_response_turns=run["maxResponseTurns"], client=client,
+                                                 stronger_models=stronger_models)
         if selection.provider == "omp":
             from .omp_client import run_omp_code_loop
             return await run_omp_code_loop(context=context, session=session, instructions=active_instructions,
-                                           max_response_turns=run["maxResponseTurns"], selector=selection.model_id)
+                                           max_response_turns=run["maxResponseTurns"], selector=selection.model_id,
+                                           stronger_models=stronger_models)
         return await run_external_code_loop(context=context, session=session, instructions=active_instructions,
-                                            max_response_turns=run["maxResponseTurns"], client=cast(ExternalCodeModel, client))
+                                            max_response_turns=run["maxResponseTurns"], client=cast(ExternalCodeModel, client),
+                                            stronger_models=stronger_models)
 
     try:
         assert_active(context.signal)

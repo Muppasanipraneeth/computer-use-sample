@@ -9,7 +9,7 @@ import os
 import re
 import shutil
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Sequence
 from itertools import count
 from pathlib import Path
 from typing import Any
@@ -19,6 +19,7 @@ from .attachments import first_image, task_text
 from .errors import RunnerCoreError
 from .processes import assert_active, await_active
 from .responses_loop import execute_python_tool_call, steer_text
+from .run_model import ESCALATE_GUIDANCE, RunModel, add_usage, call_usage, parse_escalate, token_count
 from .storage import model_image_path
 
 SELECTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:-]*$")
@@ -29,7 +30,7 @@ ANSWERED_BEFORE_ACTING_NOTE = "You answered before taking any action. Run code t
 STEERED_NOTE = "The user sent new instructions since your last reply (see above). Take them into account in this reply."
 
 
-def omp_action_contract(*, web: bool, apps: bool = False) -> str:
+def omp_action_contract(*, web: bool, apps: bool = False, escalate: bool = False) -> str:
     return "\n".join([
         "This session has no function tools.",
         "Reply with one JSON object and no markdown.",
@@ -59,6 +60,8 @@ def omp_action_contract(*, web: bool, apps: bool = False) -> str:
         ),
         ASK_GUIDANCE,
         'After at least one code action, finish with {"action":"final","text":"<what you did and what happened>"}.',
+        *([f'To hand the task to a stronger model, return {{"action":"escalate","reason":"<why>"}}. {ESCALATE_GUIDANCE}']
+          if escalate else []),
         "Do not invent an exec_py or exec_js call. Put the Python in the code field.",
     ])
 
@@ -104,8 +107,8 @@ def parse_omp_catalog(payload: Any) -> list[dict[str, str]]:
     return listed
 
 
-def assistant_text_from_omp_events(stdout: str) -> str:
-    text = ""
+def _assistant_messages(stdout: str) -> Iterator[dict[str, Any]]:
+    """The assistant messages omp's --mode json printed, in order (one message_end event each)."""
     for line in stdout.splitlines():
         trimmed = line.strip()
         if not trimmed.startswith("{"):
@@ -117,8 +120,13 @@ def assistant_text_from_omp_events(stdout: str) -> str:
         if not isinstance(event, dict) or event.get("type") != "message_end":
             continue
         message = event.get("message")
-        if not isinstance(message, dict) or message.get("role") != "assistant" or not isinstance(message.get("content"), list):
-            continue
+        if isinstance(message, dict) and message.get("role") == "assistant" and isinstance(message.get("content"), list):
+            yield message
+
+
+def assistant_text_from_omp_events(stdout: str) -> str:
+    text = ""
+    for message in _assistant_messages(stdout):
         parts = [
             part.get("text", "").strip()
             for part in message["content"]
@@ -126,6 +134,31 @@ def assistant_text_from_omp_events(stdout: str) -> str:
         ]
         text = "\n".join(part for part in parts if part)
     return text
+
+
+def usage_from_omp_events(stdout: str) -> dict[str, Any] | None:
+    """Summed usage of the assistant messages, or None when omp reported none.
+
+    omp reports {"input", "output", "cacheRead", "cacheWrite", "cost": {"total": <USD>}} per message, input excluding
+    the cached part, so the whole prompt is input + cacheRead + cacheWrite."""
+    summed: dict[str, Any] | None = None
+    for message in _assistant_messages(stdout):
+        usage = message.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        cached = token_count(usage.get("cacheRead"))
+        cost = usage.get("cost")
+        part = call_usage(
+            input_tokens=token_count(usage.get("input")) + cached + token_count(usage.get("cacheWrite")),
+            output_tokens=usage.get("output"),
+            cached_tokens=cached,
+            cost_usd=cost.get("total") if isinstance(cost, dict) else None,
+        )
+        if summed is None:
+            summed = part
+        else:
+            add_usage(summed, part)
+    return summed
 
 
 def _action_from_value(value: Any) -> dict[str, Any] | None:
@@ -140,6 +173,11 @@ def _action_from_value(value: Any) -> dict[str, Any] | None:
     if value.get("action") == "ask":
         try:
             return {"action": "ask", "question": parse_ask(value)}
+        except ValueError:
+            return None
+    if value.get("action") == "escalate":
+        try:
+            return {"action": "escalate", "reason": parse_escalate(value)}
         except ValueError:
             return None
     return None
@@ -317,6 +355,8 @@ def _history_text(history: list[dict[str, Any]]) -> str:
             blocks.append(ANSWERED_BEFORE_ACTING_NOTE if latest else "You answered before taking any action.")
         elif item["kind"] == "asked":
             blocks.append(item["text"])
+        elif item["kind"] == "escalated":
+            blocks.append(f"You asked for a stronger model: {item['reason']}\n{item['note']}")
         else:
             blocks.append(f"The previous reply was not usable JSON:\n{item['text']}\nReply again with one JSON object.")
     return "\n\n".join(blocks)
@@ -328,7 +368,8 @@ def _output_text(output: list[dict[str, Any]]) -> str:
 
 async def complete_omp(
     *, instructions: str, prompt: str, selector: str, image_path: str | None, signal: asyncio.Event | None
-) -> str:
+) -> dict[str, Any]:
+    """{"text": the assistant reply, "usage": call_usage terms or None when omp reported none}."""
     assert_omp_selector(selector)
     directory = Path(tempfile.mkdtemp(prefix="jarvis-omp-"))
     prompt_path = directory / "prompt.md"
@@ -353,7 +394,7 @@ async def complete_omp(
             status_code=502,
             hint="Check that `omp login` is still valid for this model, then run it again.",
         )
-    return text
+    return {"text": text, "usage": usage_from_omp_events(stdout)}
 
 
 async def run_omp_code_loop(
@@ -363,10 +404,14 @@ async def run_omp_code_loop(
     max_response_turns: int | None,
     selector: str,
     complete: Any = complete_omp,
+    stronger_models: Sequence[str] = (),
 ) -> dict[str, Any]:
+    """stronger_models: Auto's stronger omp models (omp:provider/model), weakest first, switched to one at a time if
+    the run struggles; the prompt replays the whole history, so it carries over."""
     assert_omp_selector(selector)
-    contract = omp_action_contract(web=bool(getattr(session, "web_instruments", False)), apps=bool(getattr(session, "apps_gateway", None)))
-    instructions = f"{instructions.rstrip()}\n\n{contract}"
+    model = RunModel(context, f"omp:{selector}", stronger_models)
+    web, apps = bool(getattr(session, "web_instruments", False)), bool(getattr(session, "apps_gateway", None))
+    instructions = instructions.rstrip()
     task = task_text(context.detail["run"])
     history: list[dict[str, Any]] = []
     # The model sees the screen only when it asks (look) or when its own code displayed an image; the first image the
@@ -389,9 +434,13 @@ async def run_omp_code_loop(
         attachment = None
         notes = (image_note, STEERED_NOTE if steers else "")
         prompt = "\n\n".join(part for part in (f"Task:\n{task}", _history_text(history), *notes) if part)
+        selector = (await model.next()).model_id
+        assert_omp_selector(selector)
+        contract = omp_action_contract(web=web, apps=apps, escalate=model.can_switch)
         try:
-            text = await complete(
-                instructions=instructions, prompt=prompt, selector=selector, image_path=image_path, signal=context.signal
+            reply = await complete(
+                instructions=f"{instructions}\n\n{contract}", prompt=prompt, selector=selector, image_path=image_path,
+                signal=context.signal,
             )
         except RunnerCoreError:
             raise
@@ -409,9 +458,11 @@ async def run_omp_code_loop(
                 status_code=502,
                 hint="Run `omp login` again if the account expired, and confirm the model accepts images.",
             ) from error
+        text = reply["text"]
+        model.replied(reply["usage"])
         await await_active(
             context.emit_event({
-                "detail": f"omp:{selector}", "level": "ok", "message": f"Model turn {turn} completed.", "type": "run_progress"
+                "detail": model.model, "level": "ok", "message": f"Model turn {turn} completed.", "type": "run_progress"
             }),
             context.signal,
         )
@@ -419,6 +470,7 @@ async def run_omp_code_loop(
             action = parse_omp_action(text)
         except RunnerCoreError as error:
             history.append({"kind": "invalid", "text": text[:2000]})
+            model.unusable()
             await await_active(
                 context.emit_event({
                     "detail": str(error), "level": "warn", "message": "Model reply was not an action. Asking it to correct the reply.",
@@ -429,6 +481,9 @@ async def run_omp_code_loop(
             continue
         if action["action"] == "ask":
             history.append({"kind": "asked", "text": await ask_user(context, action["question"])})
+            continue
+        if action["action"] == "escalate":
+            history.append({"kind": "escalated", "reason": action["reason"], "note": model.requested(action["reason"])})
             continue
         if action["action"] == "final":
             # Asking counts as acting: the user may have answered that nothing should be done.
@@ -465,6 +520,7 @@ async def run_omp_code_loop(
             preview=not getattr(session, "desktop_app", False),
         )
         history.append({"kind": "code", "code": action["code"], "output": _output_text(output), "images": len(image_paths)})
+        model.stepped(output)
         if image_paths:
             attachment = (model_image_path(image_paths[-1]), DISPLAYED_IMAGE_NOTE)
     if final_assistant_message is None:
@@ -479,5 +535,5 @@ async def run_omp_code_loop(
     )
     return {
         "final_assistant_message": final_assistant_message,
-        "notes": [f"Executed the scenario through omp ({selector}).", f"Model final response: {final_assistant_message}"],
+        "notes": [f"Executed the scenario through omp ({model.selection.model_id}).", f"Model final response: {final_assistant_message}"],
     }

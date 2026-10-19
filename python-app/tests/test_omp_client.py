@@ -18,7 +18,9 @@ from app.omp_client import (
     only_looks_at_screen,
     parse_omp_action,
     run_omp_code_loop,
+    usage_from_omp_events,
 )
+from app.run_model import NOT_SWITCHING_NOTE, SWITCH_MESSAGE, call_usage
 
 PNG = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 16).decode()
 
@@ -49,7 +51,9 @@ def harness(*replies, output=None, steers=None, attachments=None):
 
     async def complete(**kwargs):
         calls.append(kwargs)
-        return replies[len(calls) - 1]
+        reply = replies[len(calls) - 1]
+        # A reply is the model's text, or {"text", "usage"} when a test meters it.
+        return reply if isinstance(reply, dict) else {"text": reply, "usage": None}
 
     return context, session, complete, calls
 
@@ -283,3 +287,133 @@ def test_contract_points_at_instruments_only_when_the_cloud_browser_runs():
     assert "web" not in omp_action_contract(web=False)
     assert "Start with display" not in omp_action_contract(web=True)
     assert "exec_py" not in instrument_lines(web=True)[0], "instrument text must not contradict the omp 'no exec_py' rule"
+
+
+STRONG = "omp:test/strong"
+AUTO = {"stronger_models": [STRONG]}
+TRACEBACK = {"output": [{"type": "input_text", "text": "Traceback (most recent call last):\n  File \"<step>\", line 1\nNameError: name 'x' is not defined"}]}
+DEADLINE = {"output": [{"type": "input_text", "text": "This code was still running after 60 s, so it was stopped; the traceback below shows where."}]}
+OK = {"output": [{"type": "input_text", "text": "ok"}]}
+
+
+def switches(context):
+    return [event for event in (entry.args[0] for entry in context.emit_event.await_args_list) if event["message"] == SWITCH_MESSAGE]
+
+
+def escalate(reason="I am stuck on this dialog."):
+    return json.dumps({"action": "escalate", "reason": reason})
+
+
+@pytest.mark.parametrize("failure", [TRACEBACK, DEADLINE], ids=["exception", "deadline"])
+async def test_auto_switches_once_after_two_failed_steps_in_a_row_and_keeps_the_history(failure):
+    context, session, complete, calls = harness(code("pyautogui.press('a')"), code("pyautogui.press('b')"), final())
+    session.execution.execute.return_value = failure
+    await run_omp_code_loop(context, session, "Instructions", None, "test/model", complete=complete, **AUTO)
+
+    assert [call["selector"] for call in calls] == ["test/model", "test/model", "test/strong"]
+    assert switches(context) == [{"type": "run_progress", "level": "warn", "message": SWITCH_MESSAGE,
+                                  "detail": "omp:test/strong · 2 code steps in a row failed"}]
+    run = context.detail["run"]
+    assert run["model"] == STRONG
+    [switch] = run["modelSwitches"]
+    assert (switch["from"], switch["to"], switch["reason"]) == ("omp:test/model", STRONG, "2 code steps in a row failed")
+    assert "pyautogui.press('a')" in calls[2]["prompt"] and "pyautogui.press('b')" in calls[2]["prompt"]
+
+
+async def test_a_success_between_failed_steps_keeps_the_fast_model():
+    context, session, complete, calls = harness(code("pyautogui.press('a')"), code("pyautogui.press('b')"), code("pyautogui.press('c')"), final())
+    session.execution.execute.side_effect = [TRACEBACK, OK, TRACEBACK]
+    await run_omp_code_loop(context, session, "Instructions", None, "test/model", complete=complete, **AUTO)
+
+    assert {call["selector"] for call in calls} == {"test/model"}
+    assert switches(context) == []
+
+
+async def test_auto_switches_after_the_second_unusable_reply():
+    context, session, complete, calls = harness("not json", code("pyautogui.press('a')"), "still not json", final())
+    await run_omp_code_loop(context, session, "Instructions", None, "test/model", complete=complete, **AUTO)
+
+    assert [call["selector"] for call in calls] == ["test/model", "test/model", "test/model", "test/strong"]
+    assert [event["detail"] for event in switches(context)] == ["omp:test/strong · 2 replies were not usable"]
+    assert "still not json" in calls[3]["prompt"]
+
+
+async def test_auto_switches_when_ten_turns_brought_no_final_answer():
+    replies = [code(f"pyautogui.press('{index}')") for index in range(10)]
+    context, session, complete, calls = harness(*replies, final())
+    await run_omp_code_loop(context, session, "Instructions", None, "test/model", complete=complete, **AUTO)
+
+    assert [call["selector"] for call in calls] == ["test/model"] * 10 + ["test/strong"]
+    assert [event["detail"] for event in switches(context)] == ["omp:test/strong · no final answer after 10 turns"]
+
+
+async def test_the_fast_model_can_ask_for_the_strong_one_and_only_it_is_offered_the_choice():
+    context, session, complete, calls = harness(escalate(), code("pyautogui.press('a')"), final())
+    await run_omp_code_loop(context, session, "Instructions", None, "test/model", complete=complete, **AUTO)
+
+    assert [call["selector"] for call in calls] == ["test/model", "test/strong", "test/strong"]
+    assert '"action":"escalate"' in calls[0]["instructions"]
+    assert '"action":"escalate"' not in calls[1]["instructions"]
+    assert "You asked for a stronger model: I am stuck on this dialog." in calls[1]["prompt"]
+    assert [event["detail"] for event in switches(context)] == ["omp:test/strong · the model asked: I am stuck on this dialog."]
+
+
+async def test_auto_climbs_one_tier_at_a_time_with_fresh_counts_and_stops_at_the_top():
+    context, session, complete, calls = harness(
+        code("pyautogui.press('a')"), escalate(), code("pyautogui.press('b')"), code("pyautogui.press('c')"),
+        escalate("Still stuck."), code("pyautogui.press('d')"), final(),
+    )
+    # The quick model's failed step must not count toward the fast model's two in a row.
+    session.execution.execute.side_effect = [TRACEBACK, TRACEBACK, TRACEBACK, OK]
+    await run_omp_code_loop(context, session, "Instructions", None, "test/quick", complete=complete,
+                            stronger_models=["omp:test/fast", STRONG])
+
+    assert [call["selector"] for call in calls] == ["test/quick", "test/quick", "test/fast", "test/fast", "test/strong", "test/strong", "test/strong"]
+    assert [event["detail"] for event in switches(context)] == [
+        "omp:test/fast · the model asked: I am stuck on this dialog.", "omp:test/strong · 2 code steps in a row failed",
+    ]
+    assert [(switch["from"], switch["to"]) for switch in context.detail["run"]["modelSwitches"]] == [
+        ("omp:test/quick", "omp:test/fast"), ("omp:test/fast", STRONG),
+    ]
+    assert '"action":"escalate"' in calls[2]["instructions"] and '"action":"escalate"' not in calls[4]["instructions"]
+    assert f"You asked for a stronger model: Still stuck.\n{NOT_SWITCHING_NOTE}" in calls[5]["prompt"]
+
+
+async def test_a_chosen_model_never_switches_or_offers_escalation():
+    context, session, complete, calls = harness(code("pyautogui.press('a')"), code("pyautogui.press('b')"), escalate(), final())
+    session.execution.execute.return_value = TRACEBACK
+    await run_omp_code_loop(context, session, "Instructions", None, "test/model", complete=complete)
+
+    assert {call["selector"] for call in calls} == {"test/model"}
+    assert switches(context) == [] and "modelSwitches" not in context.detail["run"]
+    assert all("escalate" not in call["instructions"] for call in calls)
+    assert NOT_SWITCHING_NOTE in calls[3]["prompt"]
+
+
+async def test_usage_accumulates_across_turns_and_models():
+    context, session, complete, _calls = harness(
+        {"text": escalate(), "usage": call_usage(input_tokens=1000, output_tokens=20, cached_tokens=600)},
+        {"text": code("pyautogui.press('a')"), "usage": None},
+        {"text": final(), "usage": call_usage(input_tokens=2000, output_tokens=50, cached_tokens=1500, cost_usd=0.25)},
+    )
+    await run_omp_code_loop(context, session, "Instructions", None, "test/model", complete=complete, **AUTO)
+
+    assert context.detail["run"]["usage"] == {"inputTokens": 3000, "outputTokens": 70, "cachedTokens": 2100, "costUsd": 0.25, "turns": 3}
+
+
+def test_usage_is_read_from_omp_json_events():
+    # Shapes from a real `omp --mode json -p` call; cache figures added to show they count as prompt input.
+    assistant = {"role": "assistant", "content": [{"type": "thinking", "thinking": "…"}, {"type": "text", "text": "ok"}],
+                 "provider": "anthropic", "model": "claude-haiku-5-5",
+                 "usage": {"input": 291, "output": 121, "cacheRead": 50, "cacheWrite": 7, "totalTokens": 469,
+                           "cost": {"input": 2.91e-05, "output": 6.05e-05, "cacheRead": 0, "cacheWrite": 0, "total": 8.96e-05}}}
+    stdout = "\n".join([
+        "Warning: MCP server failed to connect",
+        json.dumps({"type": "session", "version": 3}),
+        json.dumps({"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]}}),
+        json.dumps({"type": "message_end", "message": assistant}),
+        json.dumps({"type": "agent_end", "messages": [assistant]}),
+    ])
+    assert usage_from_omp_events(stdout) == {"inputTokens": 348, "outputTokens": 121, "cachedTokens": 50, "costUsd": 8.96e-05}
+    no_usage = {key: value for key, value in assistant.items() if key != "usage"}
+    assert usage_from_omp_events(json.dumps({"type": "message_end", "message": no_usage})) is None

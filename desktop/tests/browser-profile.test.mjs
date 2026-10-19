@@ -31,7 +31,7 @@ test("sign-in opens only http and https pages", () => {
 });
 
 test("a rejected url never reaches Chromium", async () => {
-  const result = await openSignInBrowser({ url: "file:///etc/passwd", userData: "/tmp/none", repoRoot: "/tmp/none" });
+  const result = await openSignInBrowser({ url: "file:///etc/passwd", userData: "/tmp/none", runnerVenv: "/tmp/none" });
   assert.deepEqual(result, { ok: false, error: "Only http and https pages can be opened for sign-in." });
 });
 
@@ -97,7 +97,7 @@ test("sign-in waits for the runner's headless browser, then opens the window wit
   const options = {
     url: "https://mail.google.com",
     userData,
-    repoRoot: home,
+    runnerVenv: path.join(home, "venv"),
     platform: "linux",
     env: { PLAYWRIGHT_BROWSERS_PATH: path.join(home, "pw") },
     home,
@@ -137,12 +137,12 @@ test("chromium prefers the runner's revision, else the newest installed", async 
 });
 
 test("the runner's chromium revision comes from its Playwright package", async () => {
-  const repoRoot = await mkdtemp(path.join(os.tmpdir(), "repo-"));
-  const driver = path.join(repoRoot, "python-app", ".venv", "lib", "python3.12", "site-packages", "playwright", "driver", "package");
+  const venv = await mkdtemp(path.join(os.tmpdir(), "venv-"));
+  const driver = path.join(venv, "lib", "python3.12", "site-packages", "playwright", "driver", "package");
   await mkdir(driver, { recursive: true });
   await writeFile(path.join(driver, "browsers.json"), JSON.stringify({ browsers: [{ name: "chromium-headless-shell", revision: "1" }, { name: "chromium", revision: "1208" }] }));
-  assert.equal(await runnerChromiumRevision(repoRoot), "1208");
-  assert.equal(await runnerChromiumRevision(path.join(repoRoot, "nowhere")), null);
+  assert.equal(await runnerChromiumRevision(venv), "1208");
+  assert.equal(await runnerChromiumRevision(path.join(venv, "nowhere")), null);
 });
 
 test("only the runner's headless chromium on this profile counts as busy", () => {

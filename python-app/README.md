@@ -75,6 +75,14 @@ Screenshots are stored as JPEG (quality 85, at most 1920 px wide). The model sti
 
 At startup and every 6 hours the runner deletes finished runs older than `JARVIS_KEEP_DAYS` (default 30) and all but the newest `JARVIS_KEEP_RUNS` (default 50) finished runs. Running runs are never touched. A run's workspace copy is deleted a day after the run finishes, and pasted images in the desktop app's `attachments` folder are deleted after 7 days.
 
+## Logs
+
+The runner logs to the console and to `runner.log` in `JARVIS_LOG_DIR` (default `~/Library/Logs/Jarvis` on macOS, `%LOCALAPPDATA%\Jarvis\logs` on Windows, `~/.local/state/jarvis/logs` on Linux), keeping 5 files of up to 2 MB. It records one line when each run starts and finishes (ID, model, status, duration, token usage), plus warnings and errors with tracebacks. Prompts appear cut to 120 characters; API keys, attachment contents and screenshots are never logged.
+
+## Locations
+
+`JARVIS_DATA_ROOT` (runs and workspaces, default `python-app/data`), `JARVIS_LABS_ROOT` (lab catalog and templates, default `labs/`) and `JARVIS_ENV_FILE` (saved keys, default the repo's `.env`) let the installed app keep everything outside the repo. `GET /api/runs/search?q=<text>&limit=50` finds past runs whose prompt or final reply contains the text.
+
 ## Interruption and Recovery
 
 **Stop** interrupts the run, attempts to release held input, and waits for the worker, browser, and lab server to close. Moving the pointer into a PyAutoGUI failsafe corner stops every running run, starting with the one whose next PyAutoGUI action hits the corner. Ordinary Python exceptions return to the model so it can correct them. Each code call has a 60-second deadline.

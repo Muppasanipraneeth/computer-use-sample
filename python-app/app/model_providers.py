@@ -7,7 +7,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from itertools import count
 from typing import Any
 
@@ -17,6 +17,7 @@ from .errors import RunnerCoreError
 from .model_selection import ModelSelection
 from .processes import assert_active, await_active
 from .responses_loop import execute_python_tool_call, session_code_tool_definitions, steer_text, user_input
+from .run_model import ESCALATE_TOOL_NAME, RunModel, call_usage, parse_escalate, token_count
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
@@ -72,6 +73,7 @@ class ExternalCodeModel:
         tools: list[dict[str, Any]],
         signal: asyncio.Event | None,
     ) -> dict[str, Any]:
+        """The classified reply plus "usage" (call_usage terms, None when the provider reported none)."""
         names = {tool["name"] for tool in tools}
         if self.selection.provider == "anthropic":
             body = build_anthropic_body(self.selection.model_id, instructions, prompt, turns, tools)
@@ -81,10 +83,29 @@ class ExternalCodeModel:
                 body,
                 signal,
             )
-            return classify_anthropic_response(payload, names)
+            return {**classify_anthropic_response(payload, names), "usage": anthropic_usage(payload)}
         body = build_compatible_body(self.selection.model_id, instructions, prompt, turns, tools)
         payload = await post_json(self._url, {"authorization": f"Bearer {self._key}"}, body, signal)
-        return classify_compatible_response(payload, names)
+        return {**classify_compatible_response(payload, names), "usage": compatible_usage(payload)}
+
+
+def anthropic_usage(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Claude's input_tokens leave out the cached prompt, which it reports as cache reads and cache writes."""
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    prompt = sum(token_count(usage.get(key)) for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    return call_usage(input_tokens=prompt, output_tokens=usage.get("output_tokens"), cached_tokens=usage.get("cache_read_input_tokens"))
+
+
+def compatible_usage(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """OpenAI-compatible chat usage; prompt_tokens already includes the cached part."""
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("prompt_tokens_details")
+    return call_usage(input_tokens=usage.get("prompt_tokens"), output_tokens=usage.get("completion_tokens"),
+                      cached_tokens=details.get("cached_tokens") if isinstance(details, dict) else 0)
 
 
 def create_external_code_model(selection: ModelSelection) -> ExternalCodeModel:
@@ -140,16 +161,22 @@ def _compatible_user_content(items: list[dict[str, Any]]) -> str | list[dict[str
 
 def _call_input(call: dict[str, Any]) -> dict[str, Any]:
     """The arguments a replayed call was made with."""
-    return call["input"] if call["name"] == ASK_TOOL_NAME else {"code": call["code"]}
+    return call["input"] if call["name"] in (ASK_TOOL_NAME, ESCALATE_TOOL_NAME) else {"code": call["code"]}
 
 
 def _parse_call(name: str, call_id: str, arguments: Any) -> dict[str, Any]:
-    """One validated tool call: exec_py carries its code, ask_user its parsed question and the raw input for replay."""
+    """One validated tool call: exec_py carries its code, ask_user its parsed question and escalate its reason, both
+    with the raw input for replay."""
     if name == ASK_TOOL_NAME:
         try:
             return {"id": call_id, "name": name, "input": arguments, "question": parse_ask(arguments)}
         except ValueError as error:
             raise _unexpected(f"{ASK_TOOL_NAME}: {error}") from error
+    if name == ESCALATE_TOOL_NAME:
+        try:
+            return {"id": call_id, "name": name, "input": arguments, "reason": parse_escalate(arguments)}
+        except ValueError as error:
+            raise _unexpected(f"{ESCALATE_TOOL_NAME}: {error}") from error
     if not isinstance(arguments, dict) or set(arguments) != {"code"} or not isinstance(arguments.get("code"), str):
         raise _unexpected("exec_py requires a code string and no other arguments.")
     return {"id": call_id, "name": name, "code": arguments["code"]}
@@ -380,7 +407,11 @@ async def run_external_code_loop(
     instructions: str,
     max_response_turns: int | None,
     client: ExternalCodeModel,
+    stronger_models: Sequence[str] = (),
 ) -> dict[str, Any]:
+    """stronger_models: Auto's stronger models of the same provider, weakest first, switched to one at a time if the
+    run struggles; the whole conversation is rebuilt for every call, so it carries over."""
+    model = RunModel(context, f"{client.selection.provider}:{client.selection.model_id}", stronger_models)
     run = context.detail["run"]
     prompt = await user_input(task_text(run), run.get("attachments", []))
     turns: list[dict[str, Any]] = []
@@ -393,16 +424,18 @@ async def run_external_code_loop(
             steers.extend(await user_input(steer_text(steer), steer.get("attachments", [])))
         # Before the first reply nothing is replayed yet, so a follow-up joins the opening user message.
         (turns[-1].setdefault("user", []) if turns else prompt).extend(steers)
+        client.selection = await model.next()
         classified = await client.complete(
             instructions=instructions,
             prompt=prompt,
             turns=turns,
-            tools=session_code_tool_definitions(session),
+            tools=session_code_tool_definitions(session, escalate=model.offers_escalation),
             signal=context.signal,
         )
+        model.replied(classified["usage"])
         await await_active(
             context.emit_event({
-                "detail": f"{client.selection.provider}:{client.selection.model_id}",
+                "detail": model.model,
                 "level": "ok",
                 "message": f"Model turn {turn} completed.",
                 "type": "run_progress",
@@ -427,6 +460,8 @@ async def run_external_code_loop(
             assert_active(context.signal)
             if call["name"] == ASK_TOOL_NAME:
                 output = [{"type": "input_text", "text": await ask_user(context, call["question"])}]
+            elif call["name"] == ESCALATE_TOOL_NAME:
+                output = [{"type": "input_text", "text": model.requested(call["reason"])}]
             elif not call["code"].strip():
                 output = [{"text": "No code was provided to exec_py.", "type": "input_text"}]
             else:
@@ -435,6 +470,7 @@ async def run_external_code_loop(
                     session,
                     {"arguments": json.dumps({"code": call["code"]}), "code": call["code"], "call_id": call["id"]},
                 )
+                model.stepped(output)
             results.append({"call_id": call["id"], "output": output})
         turns.append({"calls": classified["calls"], "commentary": classified["commentary"], "results": results})
     if final_assistant_message is None:

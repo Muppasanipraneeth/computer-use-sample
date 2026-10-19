@@ -18,7 +18,7 @@ from .config import Settings, desktop_user_data
 from .errors import RunnerCoreError
 from .lease import BackendLease
 from .runner import RunnerManager
-from .storage import prune_storage, validate_run_id
+from .storage import prune_storage, search_runs, validate_run_id
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +164,17 @@ def create_app(*, manager: RunnerManager | None = None, settings: Settings | Non
     @app.get("/api/runs/running")
     async def running() -> list[dict]:
         return await manager.get_running_run_details()
+
+    @app.get("/api/runs/search")
+    async def search(q: str = "", limit: int = 50) -> list[dict]:
+        query = q.strip()
+        if not 2 <= len(query) <= 200:
+            raise RunnerCoreError("Search text must be 2 to 200 characters.", code="invalid_request", status_code=400,
+                                  hint="Type at least two characters to search past tasks.")
+        if not 1 <= limit <= 500:
+            raise RunnerCoreError("Search limit must be between 1 and 500.", code="invalid_request", status_code=400,
+                                  hint="Leave limit out to get the newest 50 matches.")
+        return await asyncio.to_thread(search_runs, manager.storage.root, query, limit)
 
     @app.get("/api/runs/{run_id}")
     async def detail(run_id: str) -> dict:

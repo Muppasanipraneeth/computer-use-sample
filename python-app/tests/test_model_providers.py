@@ -49,8 +49,9 @@ async def test_external_loop_executes_code_and_returns_the_image(monkeypatch):
         calls["count"] += 1
         requests.append(kwargs)
         if calls["count"] == 1:
-            return {"kind": "calls", "commentary": "Looking.", "calls": [{"id": "toolu_1", "name": "exec_py", "code": "log('ok')"}]}
-        return {"kind": "final", "text": "Done.", "commentary": ""}
+            return {"kind": "calls", "commentary": "Looking.", "calls": [{"id": "toolu_1", "name": "exec_py", "code": "log('ok')"}],
+                    "usage": None}
+        return {"kind": "final", "text": "Done.", "commentary": "", "usage": None}
 
     client.complete = complete
     output = [{"type": "input_text", "text": "ok"}, {"type": "input_image", "image_url": "data:image/png;base64,cG5n"}]
@@ -128,3 +129,37 @@ async def test_ask_user_round_trips_through_claude_and_compatible_apis(monkeypat
     else:
         assert json.loads(messages[2]["tool_calls"][0]["function"]["arguments"]) == asked
         assert messages[3] == {"role": "tool", "tool_call_id": "call_1", "content": answer}
+
+
+async def test_claude_auto_escalates_with_the_conversation_and_counts_cached_input(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    client = ExternalCodeModel(parse_model_selection("anthropic:claude-fast"))
+    replies = [
+        {"content": [{"type": "tool_use", "id": "toolu_1", "name": "exec_py", "input": {"code": "log('a')"}}],
+         "usage": {"input_tokens": 10, "cache_creation_input_tokens": 5, "cache_read_input_tokens": 90, "output_tokens": 7}},
+        {"content": [{"type": "tool_use", "id": "toolu_2", "name": "escalate", "input": {"reason": "Stuck."}}],
+         "usage": {"input_tokens": 20, "output_tokens": 3}},
+        {"content": [{"type": "text", "text": "Done."}], "usage": {"input_tokens": 30, "cache_read_input_tokens": 100, "output_tokens": 4}},
+    ]
+    bodies = []
+
+    async def post(_url, _headers, body, _signal):
+        bodies.append(copy.deepcopy(body))
+        return replies[len(bodies) - 1]
+
+    monkeypatch.setattr(model_providers, "post_json", post)
+    session = SimpleNamespace(execution=SimpleNamespace(platform="darwin", execute=AsyncMock(return_value={"output": [{"type": "input_text", "text": "ok"}]})))
+    context = SimpleNamespace(detail={"run": {"prompt": "Do it.", "model": "anthropic:claude-fast"}}, signal=asyncio.Event(),
+                              emit_event=AsyncMock(), sync_browser_state=AsyncMock(), capture_screenshot=AsyncMock(),
+                              next_turn=AsyncMock(return_value=[]), ask=AsyncMock())
+    result = await run_external_code_loop(context, session, "Use exec_py.", None, client, stronger_models=["anthropic:claude-strong"])
+
+    assert result["final_assistant_message"] == "Done."
+    assert [body["model"] for body in bodies] == ["claude-fast", "claude-fast", "claude-strong"]
+    # The strong model gets the whole conversation, including the escalate call it is answering, and keeps the tool.
+    assert [block["name"] for message in bodies[2]["messages"] if message["role"] == "assistant" for block in message["content"]] == ["exec_py", "escalate"]
+    assert "escalate" in [tool["name"] for tool in bodies[2]["tools"]]
+    run = context.detail["run"]
+    assert run["model"] == "anthropic:claude-strong"
+    assert [switch["reason"] for switch in run["modelSwitches"]] == ["the model asked: Stuck."]
+    assert run["usage"] == {"inputTokens": 255, "outputTokens": 14, "cachedTokens": 190, "costUsd": None, "turns": 3}

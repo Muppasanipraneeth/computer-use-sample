@@ -10,7 +10,7 @@ import os
 import re
 import struct
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from itertools import count
 from typing import Any
 
@@ -20,8 +20,8 @@ from .desktop.input_rules import shortcut_instruction
 from .desktop.runtime import PythonRuntimeError
 from .errors import RunnerCoreError
 from .instruments import instrument_lines
-from .model_selection import parse_model_selection
 from .processes import assert_active, await_active
+from .run_model import ESCALATE_TOOL_NAME, RunModel, call_usage, escalate_tool_definition, parse_escalate
 
 
 def steer_text(steer: dict[str, Any]) -> str:
@@ -119,8 +119,8 @@ def build_code_tool_definitions(
     ]
 
 
-def session_code_tool_definitions(session: Any) -> list[dict[str, Any]]:
-    """exec_py for this session, then ask_user."""
+def session_code_tool_definitions(session: Any, *, escalate: bool = False) -> list[dict[str, Any]]:
+    """exec_py for this session, then ask_user, then escalate when Auto may switch to a stronger model."""
     return [
         *build_code_tool_definitions(
             session.execution.platform,
@@ -131,6 +131,7 @@ def session_code_tool_definitions(session: Any) -> list[dict[str, Any]]:
             apps=bool(getattr(session, "apps_gateway", None)),
         ),
         ask_tool_definition(),
+        *([escalate_tool_definition()] if escalate else []),
     ]
 
 
@@ -163,9 +164,10 @@ def classify_response(response: dict[str, Any]) -> dict[str, Any]:
         if item.get("type") == "reasoning":
             continue
         if item.get("type") == "function_call":
-            if item.get("name") not in ("exec_py", ASK_TOOL_NAME):
+            if item.get("name") not in ("exec_py", ASK_TOOL_NAME, ESCALATE_TOOL_NAME):
                 raise invalid_response(
-                    f"Unexpected function call: {item.get('name', '<unknown>')}. Only exec_py and {ASK_TOOL_NAME} are supported."
+                    f"Unexpected function call: {item.get('name', '<unknown>')}. "
+                    f"Only exec_py, {ASK_TOOL_NAME} and {ESCALATE_TOOL_NAME} are supported."
                 )
             if "status" in item and item["status"] != "completed":
                 raise invalid_response("The response contains an unfinished function call.")
@@ -186,6 +188,14 @@ def classify_response(response: dict[str, Any]) -> dict[str, Any]:
                     raise invalid_response(f"{ASK_TOOL_NAME}: {error}") from error
                 call_ids.add(item["call_id"])
                 calls.append({"call_id": item["call_id"], "name": ASK_TOOL_NAME, "question": question})
+                continue
+            if item["name"] == ESCALATE_TOOL_NAME:
+                try:
+                    reason = parse_escalate(args)
+                except ValueError as error:
+                    raise invalid_response(f"{ESCALATE_TOOL_NAME}: {error}") from error
+                call_ids.add(item["call_id"])
+                calls.append({"call_id": item["call_id"], "name": ESCALATE_TOOL_NAME, "reason": reason})
                 continue
             if not isinstance(args, dict) or set(args) != {"code"} or not isinstance(args.get("code"), str):
                 raise invalid_response("exec_py requires a code string and no other arguments.")
@@ -318,14 +328,28 @@ async def _capture_background_page(context: Any, session: Any) -> None:
             await await_active(context.capture_screenshot(session, "Background browser", observation), context.signal)
 
 
+def responses_usage(response: dict[str, Any]) -> dict[str, Any] | None:
+    """A Responses API call's usage; input_tokens already includes the cached part."""
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("input_tokens_details")
+    return call_usage(input_tokens=usage.get("input_tokens"), output_tokens=usage.get("output_tokens"),
+                      cached_tokens=details.get("cached_tokens") if isinstance(details, dict) else 0)
+
+
 async def run_responses_code_loop(
     context: Any,
     session: Any,
     instructions: str,
     max_response_turns: int | None,
     client: Any,
+    stronger_models: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Each iteration requests a response and sends all matching tool results back."""
+    """Each iteration requests a response and sends all matching tool results back. stronger_models: Auto's stronger
+    OpenAI models, weakest first, switched to one at a time if the run struggles; previous_response_id carries the
+    conversation over."""
+    model = RunModel(context, context.detail["run"]["model"], stronger_models)
     previous_response_id: str | None = None
     task = task_text(context.detail["run"])
     opening = await user_input(task, context.detail["run"].get("attachments", []))
@@ -345,16 +369,17 @@ async def run_responses_code_loop(
         request: dict[str, Any] = {
             "instructions": instructions,
             "input": next_input,
-            "model": parse_model_selection(context.detail["run"]["model"]).model_id,
+            "model": (await model.next()).model_id,
             "parallel_tool_calls": False,
             "reasoning": {"effort": "low"},
             "truncation": "auto",
-            "tools": session_code_tool_definitions(session),
+            "tools": session_code_tool_definitions(session, escalate=model.offers_escalation),
         }
         if previous_response_id is not None:
             request["previous_response_id"] = previous_response_id
         response = await await_active(client.create(request, context.signal), context.signal)
         assert_active(context.signal)
+        model.replied(responses_usage(response))
         classified = classify_response(response)
         usage = response.get("usage") or {}
         reasoning = (usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0)
@@ -393,8 +418,11 @@ async def run_responses_code_loop(
             assert_active(context.signal)
             if call["name"] == ASK_TOOL_NAME:
                 output: list[dict[str, Any]] = [{"type": "input_text", "text": await ask_user(context, call["question"])}]
+            elif call["name"] == ESCALATE_TOOL_NAME:
+                output = [{"type": "input_text", "text": model.requested(call["reason"])}]
             else:
                 output, _images = await execute_python_tool_call(context, session, call)
+                model.stepped(output)
             assert_active(context.signal)
             tool_outputs.append({"call_id": call["call_id"], "output": output, "type": "function_call_output"})
         next_input = tool_outputs

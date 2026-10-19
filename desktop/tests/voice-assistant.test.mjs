@@ -51,6 +51,13 @@ test("only typed routines and memory requests wait for the model", () => {
   }
 });
 
+test("a result from one of your workspaces is spoken under its instructions; otherwise nothing is added", () => {
+  const pirate = resultInstructions("witty", null, { name: "Pirate test", instructions: "Always answer like a pirate." });
+  assert.match(pirate, /workspace "Pirate test", whose instructions apply to how you speak as well: Always answer like a pirate\./);
+  assert.doesNotMatch(resultInstructions("witty", null, { name: "Empty", instructions: "  " }), /workspace/);
+  assert.doesNotMatch(resultInstructions("witty", null), /workspace/);
+});
+
 test("a follow-up decision keeps its message only when it changes or queues work", () => {
   assert.deepEqual(parseFollowUp('{"kind":"queue","say":"I\'ll check the weather after this.","message":"Check the weather in Hyderabad."}', "then weather"), {
     kind: "queue",

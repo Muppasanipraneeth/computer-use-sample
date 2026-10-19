@@ -3,7 +3,7 @@ import json
 import sys
 from functools import lru_cache
 
-from .config import DEFAULT_MODEL_DISPLAY_NAME, REPO_ROOT
+from .config import DEFAULT_MODEL_DISPLAY_NAME, labs_root
 from .desktop.input_rules import shortcut_instruction
 from .desktop.unreal_editor import unreal_editor_card
 from .instruments import instrument_lines
@@ -13,11 +13,12 @@ from .user_profile import about_user_lines, memory_lines
 
 @lru_cache(maxsize=1)
 def catalog() -> dict:
-    return json.loads((REPO_ROOT / "labs" / "catalog.json").read_text(encoding="utf-8"))
+    return json.loads((labs_root() / "catalog.json").read_text(encoding="utf-8"))
 
 
 def list_scenarios() -> list[dict]:
-    scenarios = [validate_wire(ScenarioManifest, {**item, "workspaceTemplatePath": str(REPO_ROOT / "labs" / item["templateDirectory"])})
+    root = labs_root()
+    scenarios = [validate_wire(ScenarioManifest, {**item, "workspaceTemplatePath": str(root / item["templateDirectory"])})
                  for item in catalog()["scenarios"]]
     # The Python console drives a real desktop app; offer that target first.
     return sorted(scenarios, key=lambda item: item["labId"] != "desktop")

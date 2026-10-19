@@ -4,7 +4,7 @@ Optional properties are omitted on the wire, except fields listed in `nullable`,
 limit", "nothing pending"). Start requests reject unknown fields.
 """
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from types import UnionType
 from typing import Annotated, Any, ClassVar, Literal, TypeVar, Union, get_args, get_origin
 
@@ -75,6 +75,11 @@ class WireModel(BaseModel):
         return self.model_dump(by_alias=True, exclude_none=True, mode="json")
 
 
+def timestamp() -> str:
+    """Now, in the wire's UTC format."""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def valid_timestamp(value: str) -> str:
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z", value):
         raise ValueError("Timestamp must be a UTC ISO date ending in Z.")
@@ -137,8 +142,36 @@ class StartRunWorkspace(RunWorkspace):
     instructions: Annotated[str, StringConstraints(strip_whitespace=True, max_length=4000)] = ""
 
 
+class ModelChoice(WireModel):
+    """Which model Auto started on, and why (model_routing.route_task)."""
+    model: Text
+    tier: Literal["quick", "fast", "strong"]
+    reason: Text
+
+
+class ModelSwitch(WireModel):
+    """One of Auto's escalations, one tier up."""
+    at: str
+    from_: Text = Field(alias="from")
+    to: Text
+    reason: Text
+
+    _date = field_validator("at")(valid_timestamp)
+
+
+class RunUsage(WireModel):
+    """Tokens across every model call of a run. inputTokens counts the whole prompt, cachedTokens the part read from
+    the provider's cache; costUsd is null unless the provider reported a price (omp does)."""
+    nullable = frozenset({"cost_usd"})
+    input_tokens: Count
+    output_tokens: Count
+    cached_tokens: Count
+    cost_usd: Annotated[float, Field(ge=0)] | None = None
+    turns: Count
+
+
 class RunRecord(WireModel):
-    nullable = frozenset({"max_response_turns", "question", "workspace"})
+    nullable = frozenset({"max_response_turns", "question", "workspace", "model_choice"})
     id: Text
     scenario_id: Text
     lab_id: LabId
@@ -159,6 +192,10 @@ class RunRecord(WireModel):
     question: RunQuestion | None = None
     # The user's workspace the run was started in; live runs carry null without one, older records omit it.
     workspace: RunWorkspace | None = None
+    # Live runs carry these from the start (modelChoice null unless the run is on Auto); older records omit them.
+    model_choice: ModelChoice | None = None
+    model_switches: list[ModelSwitch] | None = None
+    usage: RunUsage | None = None
 
     _dates = field_validator("started_at", "completed_at")(valid_timestamp)
 

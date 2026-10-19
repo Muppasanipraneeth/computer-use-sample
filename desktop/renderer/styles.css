@@ -159,6 +159,35 @@ kbd {
 .workspace-folder { flex: 1; min-width: 0; align-self: center; font-size: var(--text-sm); color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .button.danger { color: var(--danger); margin-right: auto; }
 
+/* ---------- chat search ---------- */
+
+.chat-search { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-1); padding: 0 var(--space-2); height: 30px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--bg-sunken); color: var(--fg-subtle); }
+.chat-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.chat-search .icon { width: 14px; height: 14px; flex: none; }
+.chat-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; color: var(--fg); font: inherit; font-size: var(--text-sm); }
+.chat-search input::-webkit-search-cancel-button { display: none; }
+.chat-search kbd { opacity: 0.7; }
+.chat-search:focus-within kbd { display: none; }
+.search-hit { align-items: flex-start; }
+.search-icon { width: 13px; height: 13px; margin-top: 3px; color: var(--fg-subtle); flex: none; }
+.search-text { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.search-meta { font-size: var(--text-xs); color: var(--fg-subtle); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- setup checklist ---------- */
+
+.setup-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
+.setup-step { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-raised); }
+.setup-step.done { background: var(--bg-sunken); border-color: transparent; }
+.setup-step.done .setup-text strong { color: var(--fg-muted); }
+.setup-mark { display: grid; place-items: center; width: 24px; height: 24px; flex: none; border-radius: 50%; border: 1.5px solid var(--border-strong); color: var(--success); }
+.setup-step.done .setup-mark { border-color: transparent; }
+.setup-step.required:not(.done) .setup-mark { border-color: var(--accent); }
+.setup-mark .icon { width: 22px; height: 22px; }
+.setup-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-subtle); }
+.setup-text { flex: 1; min-width: 0; display: grid; gap: 2px; font-size: var(--text-sm); color: var(--fg-muted); }
+.setup-text strong { color: var(--fg); font-size: var(--text-md); font-weight: var(--weight-semibold); }
+.setup-step .button { flex: none; }
+
 .labs { margin-top: 1px; }
 .labs-summary {
   display: flex;
@@ -1123,6 +1152,54 @@ dialog::backdrop { background: var(--bg-backdrop); backdrop-filter: blur(6px); a
 
 .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--accent-soft); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
 .activity-icon .spinner { width: 14px; height: 14px; }
+
+/* ---------- welcome ---------- */
+
+/* Launch, after Dia: an aurora of blurred bars rises from the floor, the greeting comes out of a blur with the name as
+   the one serif accent, then the aurora sinks and the app settles in. Jarvis's colours, not Dia's rainbow. */
+.welcome {
+  --aurora-1: #0f4d44; --aurora-2: #1f8a7a; --aurora-3: #7cc8ff; --aurora-4: #fff7df; --aurora-5: #ffd166; --aurora-6: #ff7a45; --aurora-7: rgb(226 196 255 / 0);
+  position: fixed; inset: 0; z-index: 100; overflow: hidden; display: grid; place-items: center; background: var(--bg-canvas); cursor: pointer;
+}
+@media (prefers-color-scheme: light) {
+  .welcome { --aurora-1: #034f46; --aurora-2: #2a9d8f; --aurora-3: #8fd3ff; --aurora-4: #ffffff; --aurora-5: #ffd166; --aurora-6: #ff7a45; }
+}
+.welcome[hidden] { display: none; }
+.aurora-1 { stop-color: var(--aurora-1); }
+.aurora-2 { stop-color: var(--aurora-2); }
+.aurora-3 { stop-color: var(--aurora-3); }
+.aurora-4 { stop-color: var(--aurora-4); }
+.aurora-5 { stop-color: var(--aurora-5); }
+.aurora-6 { stop-color: var(--aurora-6); }
+.aurora-7 { stop-color: var(--aurora-7); }
+/* Base styles are each piece's resting state; before `.playing` lands (the first two frames) they wait hidden, and
+   each entrance animation fills backwards so it stays hidden through its own delay. */
+/* overflow: visible so the blur above the tallest bar fades out instead of stopping at a hard line (the overlay clips). */
+.welcome-aurora { position: absolute; left: -12%; bottom: -6%; width: 124%; height: 66%; overflow: visible; opacity: 0.9; transform-origin: 50% 100%; }
+.welcome-center { position: relative; display: grid; justify-items: center; gap: var(--space-3); margin-bottom: 18vh; text-align: center; }
+.welcome-logo { border-radius: 14px; box-shadow: 0 8px 22px rgb(0 0 0 / 0.18), inset 0 1px 0 rgb(255 255 255 / 0.6); }
+.welcome-title { margin: 0; font-family: var(--font-sans); font-weight: 300; font-size: clamp(38px, 5.2vw, 64px); line-height: 1.05; letter-spacing: -0.045em; color: var(--fg); }
+.welcome-title > span, .welcome-name { display: inline-block; }
+.welcome-name { font-family: var(--font-serif); font-style: italic; font-weight: 600; letter-spacing: -0.02em; }
+.welcome-name:empty { display: none; }
+.welcome-sub { margin: 0; font-size: var(--text-base); color: var(--fg-muted); letter-spacing: 0.01em; }
+.welcome:not(.playing):not(.calm) :is(.welcome-aurora, .welcome-logo, .welcome-title > span, .welcome-name, .welcome-sub) { opacity: 0; }
+.welcome.playing .welcome-aurora { animation: aurora-rise 1.5s cubic-bezier(0.16, 1, 0.3, 1) backwards, aurora-breathe 3.2s ease-in-out 1.5s infinite alternate; }
+.welcome.playing .welcome-logo { animation: blur-in 0.7s var(--ease-out) 0.25s backwards; }
+.welcome.playing .welcome-title > span { animation: blur-in 0.8s var(--ease-out) 0.5s backwards; }
+.welcome.playing .welcome-name { animation: blur-in 0.8s var(--ease-out) 0.8s backwards; }
+.welcome.playing .welcome-sub { animation: blur-in 0.7s var(--ease-out) 1.15s backwards; }
+.welcome.leaving { opacity: 0; transition: opacity 0.6s ease 0.1s; }
+.welcome.leaving .welcome-aurora { transform: scaleY(0); opacity: 0; transition: transform 0.7s cubic-bezier(0.7, 0, 0.84, 0), opacity 0.6s ease; animation: none; }
+.welcome.leaving .welcome-center { transform: scale(0.97); filter: blur(6px); transition: transform 0.6s ease, filter 0.6s ease; }
+.welcome.calm .welcome-aurora { opacity: 0.85; }
+.welcome.calm.leaving { transition-duration: 0.15s; }
+/* The app settles into place as the welcome fades. */
+body.arrived .app { animation: settle 0.7s var(--ease-out); }
+@keyframes aurora-rise { from { opacity: 0; transform: scaleY(0); } 40% { opacity: 0.9; } to { opacity: 0.9; transform: scaleY(1); } }
+@keyframes aurora-breathe { from { opacity: 0.9; transform: scaleY(1); } to { opacity: 0.78; transform: scaleY(0.93); } }
+@keyframes blur-in { from { opacity: 0; filter: blur(14px); transform: translateY(10px); } to { opacity: 1; filter: blur(0); transform: none; } }
+@keyframes settle { from { opacity: 0; transform: scale(0.985); filter: blur(4px); } }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 50% { opacity: 0.35; } }
