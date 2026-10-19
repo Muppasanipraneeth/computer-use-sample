@@ -1,5 +1,5 @@
 /* global state, $, LISTEN_KEYS, bridge, persist, toast, startMicrophone, stopMicrophone, createSpeechPlayer, renderComposer, setPrompt, stopRun, send, answerFor, answerQuestion, followUp, renderMemories, renderRoutines */
-/* exported renderVoice, holdControlOn, enableVoice, disableVoice, inConversation, stopSpeaking, playChunk, say, cancelVoicePending, onVoiceCommand */
+/* exported renderVoice, holdControlOn, enableVoice, disableVoice, inConversation, stopSpeaking, playChunk, say, cancelVoicePending, onVoiceCommand, showHeard, clearHeard */
 // Voice: turning it on and off, speaking replies, and acting on spoken commands.
 
 /* ---------- voice ---------- */
@@ -197,10 +197,37 @@ async function voiceCancel(line) {
   await say(line ?? "Okay, cancelled.");
 }
 
+/**
+ * What you're saying, live in the message box while you talk (from the speech worker's partial transcripts), then the
+ * whole request while Jarvis works out what you meant (final). Read-only meanwhile, so Enter can't send half a
+ * sentence; text you typed yourself is never replaced.
+ */
+function showHeard(text, final = false) {
+  const box = $("#prompt");
+  if (!text || (box.value && box.value !== state.voiceHeard?.text)) return;
+  state.voiceHeard = { text, final };
+  box.readOnly = true;
+  box.classList.add("dictating");
+  setPrompt(text);
+}
+
+/** Ends showing what you said. keep: the words stay as the prompt (a task to confirm); otherwise they're removed. */
+function clearHeard(keep = false) {
+  const heard = state.voiceHeard;
+  if (!heard) return;
+  state.voiceHeard = null;
+  const box = $("#prompt");
+  box.readOnly = false;
+  box.classList.remove("dictating");
+  if (!keep && box.value === heard.text) setPrompt("");
+  else renderComposer();
+}
+
 // Spoken prompts drive the real mouse and keyboard, so Jarvis says what it understood before doing it ("I'll open
 // Spotify and play Runway. Proceeding."). That sentence is the moment to catch a mishearing: talk over it, press Esc
 // or click the box. The run starts only if it plays to the end.
 async function proposeTask({ say: line, prompt }) {
+  clearHeard(true);
   setPrompt(prompt);
   if (state.activeRunId || state.sending) {
     await say("I'm still on the current task. I've put that in the message box for when it's done.");
@@ -231,50 +258,62 @@ function normalized(text) {
 async function onVoiceCommand({ action, prompt, source }) {
   const addressed = source === "wake" || source === "push-to-talk";
   if (action === "none") {
+    clearHeard();
     if (addressed) toast("Didn't catch that.", "info");
     return;
   }
-  await inConversation(async () => {
-    // Plain "stop" / "cancel" need no model: act at once.
-    if (action === "stop") return voiceStop();
-    if (action === "cancel") return voiceCancel();
-    // An open question takes what you say as its answer. Words caught in the follow-up window without "Hey Jarvis"
-    // may be someone else talking, so they only count when they pick one of the offered options; approvals always
-    // need you to address Jarvis (wake phrase, hold Control, the shortcut) or press a button.
-    const asking = state.activeRunId ? state.runs.get(state.activeRunId) : null;
-    if (asking?.question) {
-      const question = asking.question;
-      const deliberate = addressed || source === "barge-in";
-      const option = question.options.find((choice) => normalized(prompt).includes(normalized(choice)));
-      if (!deliberate && (question.kind === "approval" || !option)) {
-        toast(question.kind === "approval" ? "To approve by voice, hold Control (or say “Hey Jarvis”) and say yes or no." : "Didn't take that as your answer. Hold Control and answer, or type it.", "info");
-        return;
-      }
-      const answer = option ?? answerFor(question, prompt);
-      if (answer === null) return say("Say yes or no.");
-      if (await answerQuestion(asking.runId, question, answer)) return say(answer === "deny" ? "Okay, I won't." : "Got it.", false);
+  // The whole request replaces the live words and stays in view while Jarvis decides what to do with it.
+  if (prompt) showHeard(prompt, true);
+  else clearHeard();
+  try {
+    await inConversation(() => respond({ action, prompt, source, addressed }));
+  } finally {
+    clearHeard();
+  }
+}
+
+async function respond({ action, prompt, source, addressed }) {
+  // Plain "stop" / "cancel" need no model: act at once.
+  if (action === "stop") return voiceStop();
+  if (action === "cancel") return voiceCancel();
+  // An open question takes what you say as its answer. Words caught in the follow-up window without "Hey Jarvis"
+  // may be someone else talking, so they only count when they pick one of the offered options; approvals always
+  // need you to address Jarvis (wake phrase, hold Control, the shortcut) or press a button.
+  const asking = state.activeRunId ? state.runs.get(state.activeRunId) : null;
+  if (asking?.question) {
+    const question = asking.question;
+    const deliberate = addressed || source === "barge-in";
+    const option = question.options.find((choice) => normalized(prompt).includes(normalized(choice)));
+    if (!deliberate && (question.kind === "approval" || !option)) {
+      toast(question.kind === "approval" ? "To approve by voice, hold Control (or say “Hey Jarvis”) and say yes or no." : "Didn't take that as your answer. Hold Control and answer, or type it.", "info");
       return;
     }
-    // While this chat's task works, what you say is judged against it: add, change the plan, queue, stop or answer.
-    if (state.activeRunId) return followUp(prompt, { spoken: true });
-    state.voicePhase = "thinking";
-    renderVoice();
-    const result = await bridge.voiceUnderstand({ text: prompt, source, running: null, lastReply: lastReply() });
-    state.voicePhase = null;
-    renderVoice();
-    const reply = result.ok ? result.reply : { kind: "task", say: "On it.", prompt };
-    if (reply.kind === "ignore") {
-      if (addressed) toast("Didn't catch a task.", "info");
-      return;
-    }
-    if (reply.kind === "stop") return voiceStop(reply.say);
-    if (reply.kind === "cancel") return voiceCancel(reply.say);
-    if (reply.kind === "answer") return say(reply.say);
-    if (reply.kind === "remember" || reply.kind === "schedule") {
-      // Saved by the main process already; refresh the lists in case Settings is open.
-      void (reply.kind === "remember" ? renderMemories() : renderRoutines());
-      return say(reply.say);
-    }
-    return proposeTask(reply);
-  });
+    const answer = option ?? answerFor(question, prompt);
+    if (answer === null) return say("Say yes or no.");
+    if (await answerQuestion(asking.runId, question, answer)) return say(answer === "deny" ? "Okay, I won't." : "Got it.", false);
+    return;
+  }
+  // While this chat's task works, what you say is judged against it: add, change the plan, queue, stop or answer.
+  if (state.activeRunId) return followUp(prompt, { spoken: true });
+  state.voicePhase = "thinking";
+  renderVoice();
+  const result = await bridge.voiceUnderstand({ text: prompt, source, running: null, lastReply: lastReply() });
+  state.voicePhase = null;
+  renderVoice();
+  const reply = result.ok ? result.reply : { kind: "task", say: "On it.", prompt };
+  // Understood: anything but a task to confirm no longer needs the words in the box.
+  if (reply.kind !== "task") clearHeard();
+  if (reply.kind === "ignore") {
+    if (addressed) toast("Didn't catch a task.", "info");
+    return;
+  }
+  if (reply.kind === "stop") return voiceStop(reply.say);
+  if (reply.kind === "cancel") return voiceCancel(reply.say);
+  if (reply.kind === "answer") return say(reply.say);
+  if (reply.kind === "remember" || reply.kind === "schedule") {
+    // Saved by the main process already; refresh the lists in case Settings is open.
+    void (reply.kind === "remember" ? renderMemories() : renderRoutines());
+    return say(reply.say);
+  }
+  return proposeTask(reply);
 }

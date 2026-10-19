@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { findWakePhrase, parseVoiceCommand } from "../voice/commands.mjs";
+import { findWakePhrase, parseVoiceCommand, spokenText } from "../voice/commands.mjs";
+
+test("the live words drop leftover wake-phrase audio but keep the user's own first word", () => {
+  assert.equal(spokenText("Hey Jarvis, open"), "open");
+  assert.equal(spokenText("This, opened Spotify and"), "opened Spotify and");
+  assert.equal(spokenText("This file is old"), "This file is old");
+  assert.equal(spokenText("vis,"), "");
+});
 
 test("stop words stop, even when the first sound was clipped", () => {
   for (const said of ["Stop.", "Top", "stop it", "Please stop now", "STOP THE RUN!"]) {

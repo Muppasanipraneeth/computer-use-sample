@@ -64,6 +64,7 @@ const state = {
   voice: "off", // off | preparing | listening | hearing | transcribing | following (the voice engine's state)
   voicePhase: null, // thinking | speaking, shown over the engine's state while Jarvis works out or says its reply
   voicePending: null, // { prompt } while Jarvis says what it is about to do; the run starts when it finishes
+  voiceHeard: null, // { text, final } while the message box shows what you're saying (final: the whole request, being understood)
   voiceStoppedRunId: null, // a run stopped by voice: "Stopping." already said it, so no "Stopped." afterwards
   voiceShortcut: false, // push-to-talk shortcut registered (another app may already own it)
   voiceHoldKey: false, // the Control-key watcher exists (macOS, built at start)

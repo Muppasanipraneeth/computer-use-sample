@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { faceMode, faceScale, faceState, faceVisible, moodFor, placeFace, snapFace } from "../avatar-mood.mjs";
+import { faceCaption, faceMode, faceScale, faceState, faceVisible, moodFor, placeFace, snapFace } from "../avatar-mood.mjs";
+
+test("while the user talks and Jarvis thinks, the caption is their words, never Jarvis's last reply", () => {
+  const face = { text: "Playing Blinding Lights by The Weeknd.", heard: "open slack and" };
+  assert.deepEqual(faceCaption({ ...face, voice: "hearing" }), { caption: "open slack and", heard: true });
+  assert.deepEqual(faceCaption({ ...face, voice: "thinking" }), { caption: "open slack and", heard: true });
+  assert.deepEqual(faceCaption({ ...face, voice: "hearing", heard: "" }), { caption: "", heard: false }, "no words yet: Listening…");
+  assert.deepEqual(faceCaption({ ...face, voice: "speaking" }), { caption: "Playing Blinding Lights by The Weeknd.", heard: false });
+});
 
 test("a conversation shows the face; a background task does only while it works, asks or just finished", () => {
   assert.equal(faceState("speaking", "working"), "speaking", "talking wins over the task");

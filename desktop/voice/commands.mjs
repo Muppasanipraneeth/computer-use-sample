@@ -11,8 +11,13 @@ const WAKE_TAIL = /^\s*(?:this|his|is|bis|fis|vis)[,.!]\s*/i;
 const STOP = /^(?:please )?(?:stop|top|halt|abort)(?: (?:it|that|now|the run|running))?(?: please)?$/;
 const CANCEL = /^(?:cancel|never ?mind|forget it|no|not that)$/;
 
+/** The words the user said to Jarvis: the transcript without leftover wake-phrase audio. Shown live while they talk. */
+export function spokenText(transcript) {
+  return String(transcript ?? "").replace(/\s+/g, " ").trim().replace(WAKE_PREFIX, "").replace(WAKE_TAIL, "");
+}
+
 export function parseVoiceCommand(transcript) {
-  const text = String(transcript ?? "").replace(/\s+/g, " ").trim().replace(WAKE_PREFIX, "").replace(WAKE_TAIL, "");
+  const text = spokenText(transcript);
   const words = text.toLowerCase().replace(/[^a-z0-9' ]+/g, " ").replace(/\s+/g, " ").trim();
   if (!words) return { action: "none" };
   if (STOP.test(words)) return { action: "stop" };

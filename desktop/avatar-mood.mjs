@@ -17,6 +17,18 @@ export function faceVisible(voiceState, taskState) {
   return faceState(voiceState, taskState) !== "idle";
 }
 
+// While the user talks and Jarvis works out the reply, the caption is the user's own words (the prompt as heard).
+const HEARING = new Set(["hearing", "transcribing", "thinking"]);
+
+/**
+ * What the caption says: the user's words while they talk and Jarvis thinks, else what Jarvis last said or a task's
+ * line. `heard` marks the user's words so they're drawn differently. An empty caption falls back to "Listening…" etc.
+ */
+export function faceCaption({ voice, text, heard }) {
+  if (HEARING.has(voice)) return { caption: heard ?? "", heard: Boolean(heard) };
+  return { caption: text ?? "", heard: false };
+}
+
 const SORRY = /\b(sorry|couldn'?t|can'?t|cannot|unable|failed|failure|error|didn'?t work|no luck|unfortunately|broke)\b/i;
 // Dry, deadpan markers: the witty persona's sarcasm gets a wink rather than a grin.
 const WRY = /\b(obviously|of course|clearly|apparently|allegedly|pretend|shockingly|naturally|as if|how original)\b/i;

@@ -189,7 +189,7 @@ function drawLine(t) {
 const QUIET = { hearing: "Listening…", transcribing: "Got it…", thinking: "Thinking…" };
 
 let voiceOn = false;
-api.onState(({ state: nextState, mood: nextMood, caption: text, show, expanded, voiceOn: nextVoiceOn, options }) => {
+api.onState(({ state: nextState, mood: nextMood, caption: text, heard, show, expanded, voiceOn: nextVoiceOn, options }) => {
   if (options) markOptions(options);
   // Hiding fades out with the last expression in place.
   if (!show) {
@@ -211,6 +211,8 @@ api.onState(({ state: nextState, mood: nextMood, caption: text, show, expanded, 
   const words = text || QUIET[state] || "";
   captionText.textContent = words;
   caption.classList.toggle("quiet", !text && Boolean(QUIET[state]));
+  // The user's own words, live while they talk: the prompt as Jarvis heard it.
+  caption.classList.toggle("heard", Boolean(text) && Boolean(heard));
   root.classList.toggle("has-caption", Boolean(words));
   root.classList.add("shown");
 });

@@ -2,7 +2,8 @@
 // Input: { type: "init", paths } once, then { type: "audio", samples: Float32Array } at 16 kHz, plus
 //   { type: "listen-now", hold?, lookbackSeconds? } (push-to-talk; hold: until "release"), { type: "release", cancel? },
 //   { type: "speaking", on, followUp }.
-// Output: { type: "ready" | "error" | "state" | "command" }. Jarvis's own voice is speaker.mjs, a separate process.
+// Output: { type: "ready" | "error" | "state" | "command" | "partial" }; "partial" is the words so far while the user
+// talks. Jarvis's own voice is speaker.mjs, a separate process.
 //
 // Duplex-style conversation: while Jarvis talks, the microphone stays open. Speech from the user cuts Jarvis off
 // (barge-in) and becomes the next command; right after Jarvis finishes, a short follow-up window takes a reply
@@ -32,6 +33,8 @@ const ONSET_MIN_DBFS = -42;
 const FOLLOW_UP_SECONDS = 6;
 // The recognizer wake path transcribes utterances up to this long while waiting for "Hey Jarvis".
 const IDLE_UTTERANCE_SECONDS = 12;
+// While the user talks, what they've said so far is transcribed again at most this often, so it shows as they speak.
+const PARTIAL_SECONDS = 0.5;
 
 let spotter;
 let recognizer;
@@ -39,7 +42,7 @@ let vadConfig;
 let stream;
 let total = 0; // absolute samples received
 const ring = new Float32Array(RATE * RING_SECONDS);
-let capture = null; // { vad, pending, start, speechSeen, segments, source, held?, releaseAt? }
+let capture = null; // { vad, pending, start, speechSeen, segments, source, held?, releaseAt?, heard, heardLength, partialAt, partial }
 // While Jarvis speaks ("speaking") or just finished ("following"), a VAD watches for the user starting to talk.
 let watch = null; // { mode: "speaking" | "following", vad, pending, run, until }
 // While waiting for the wake phrase, a VAD cuts utterances for the recognizer wake path.
@@ -107,7 +110,12 @@ function windows(vad, pending, samples, onWindow) {
   return joined.slice(offset);
 }
 
-function feedCapture(samples) {
+function feedCapture(samples, keep = true) {
+  // Everything heard since the request began, for the live transcript; the VAD only hands over finished segments.
+  if (keep) {
+    capture.heard.push(samples);
+    capture.heardLength += samples.length;
+  }
   capture.pending = windows(capture.vad, capture.pending, samples, () => {
     if (capture.vad.isDetected()) capture.speechSeen = true;
   });
@@ -118,13 +126,44 @@ function feedCapture(samples) {
   }
 }
 
+function newCapture(vad, source, held, speechSeen, heard) {
+  return { vad, pending: new Float32Array(0), start: total, speechSeen, segments: [], source, held, heard: [heard], heardLength: heard.length, partialAt: total + PARTIAL_SECONDS * RATE, partial: "" };
+}
+
 function startCapture(from, source, held = false) {
   watch = null;
   idle = null;
   post({ type: "state", state: "hearing", source });
   const seconds = (held ? MAX_HOLD_SECONDS : MAX_COMMAND_SECONDS) + 5;
-  capture = { vad: new sherpa.Vad(vadConfig, seconds), pending: new Float32Array(0), start: total, speechSeen: false, segments: [], source, held };
-  feedCapture(recall(from));
+  const lookback = recall(from);
+  capture = newCapture(new sherpa.Vad(vadConfig, seconds), source, held, false, lookback);
+  feedCapture(lookback, false);
+}
+
+function joined(parts, length) {
+  const out = new Float32Array(length);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+
+/**
+ * The words so far, re-transcribed from everything heard. Moonshine decodes 2 s of speech in ~25 ms, but this worker is
+ * single-threaded, so the next decode waits at least four times as long as this one took: a long request never
+ * crowds out the audio that decides when it ends.
+ */
+function postPartial() {
+  if (!capture.speechSeen || total < capture.partialAt) return;
+  const started = performance.now();
+  const text = transcribe(joined(capture.heard, capture.heardLength));
+  const seconds = (performance.now() - started) / 1000;
+  capture.partialAt = total + Math.round(Math.max(PARTIAL_SECONDS, seconds * 4) * RATE);
+  if (!text || text === capture.partial) return;
+  capture.partial = text;
+  post({ type: "partial", text, source: capture.source });
 }
 
 function transcribe(speech) {
@@ -151,12 +190,7 @@ function finishCapture() {
     return;
   }
   post({ type: "state", state: "transcribing" });
-  const speech = new Float32Array(segments.reduce((sum, part) => sum + part.length, 0));
-  let at = 0;
-  for (const part of segments) {
-    speech.set(part, at);
-    at += part.length;
-  }
+  const speech = joined(segments, segments.reduce((sum, part) => sum + part.length, 0));
   const text = transcribe(speech);
   debug(`heard (${(speech.length / RATE).toFixed(1)} s, ${source}): "${text}"`);
   post({ type: "command", text, source, seconds: +(speech.length / RATE).toFixed(2) });
@@ -215,10 +249,12 @@ function feedWatch(samples) {
   const source = watch.mode === "speaking" ? "barge-in" : "follow-up";
   debug(`${source} at ${level.toFixed(1)} dBFS`);
   post({ type: "state", state: "hearing", source });
-  capture = { vad: watch.vad, pending: new Float32Array(0), start: total, speechSeen: true, segments: [], source };
+  // The onset that counted as talking is already behind us; the ring still holds it, so the live words start with it.
+  const onset = recall(total - Math.round((ONSET_SECONDS + 0.2) * RATE));
+  capture = newCapture(watch.vad, source, false, true, onset);
   const rest = watch.pending;
   watch = null;
-  feedCapture(rest);
+  feedCapture(rest, false);
 }
 
 /**
@@ -268,11 +304,12 @@ function onAudio(samples) {
     feedCapture(samples);
     const elapsed = (total - capture.start) / RATE;
     if (capture.held) {
-      if ((capture.releaseAt !== undefined && total >= capture.releaseAt) || elapsed > MAX_HOLD_SECONDS) finishCapture();
-      return;
+      if ((capture.releaseAt !== undefined && total >= capture.releaseAt) || elapsed > MAX_HOLD_SECONDS) return finishCapture();
+    } else if (capture.segments.length > 0 || elapsed > MAX_COMMAND_SECONDS || (!capture.speechSeen && elapsed > NO_SPEECH_SECONDS)) {
+      // A finished segment means the user paused after speaking: the command is complete.
+      return finishCapture();
     }
-    // A finished segment means the user paused after speaking: the command is complete.
-    if (capture.segments.length > 0 || elapsed > MAX_COMMAND_SECONDS || (!capture.speechSeen && elapsed > NO_SPEECH_SECONDS)) finishCapture();
+    postPartial();
     return;
   }
   if (watch) {

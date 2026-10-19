@@ -59,7 +59,7 @@ contextBridge.exposeInMainWorld("desktop", {
   voicePrefs: (prefs) => ipcRenderer.send("voice:prefs", prefs),
   setTheme: (mode) => ipcRenderer.send("theme:set", mode),
   onVoice: (handler) => {
-    for (const kind of ["state", "command", "progress", "speech"]) ipcRenderer.on(`voice:${kind}`, (_event, payload) => handler(kind, payload));
+    for (const kind of ["state", "command", "partial", "progress", "speech"]) ipcRenderer.on(`voice:${kind}`, (_event, payload) => handler(kind, payload));
   },
   voiceList: () => ipcRenderer.invoke("voice:list"),
   getProfile: () => ipcRenderer.invoke("profile:get"),

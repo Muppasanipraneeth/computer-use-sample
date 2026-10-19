@@ -10,7 +10,7 @@ import path from "node:path";
 
 import { BrowserWindow, ipcMain, screen } from "electron";
 
-import { FACE_SIZES, faceMode, faceScale, faceState, faceVisible, moodFor, placeFace, snapFace } from "./avatar-mood.mjs";
+import { FACE_SIZES, faceCaption, faceMode, faceScale, faceState, faceVisible, moodFor, placeFace, snapFace } from "./avatar-mood.mjs";
 
 const BASE = { width: 420, height: 264 };
 // After a conversation the face lingers this long before settling back into the line (or hiding), so a quick next
@@ -31,7 +31,8 @@ export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, 
   let lingering = null;
   let snoozedUntil = 0;
   let dragFrom = null;
-  const face = { voice: "off", task: null, text: "", mood: "neutral" };
+  // heard: the user's words, live while they talk (from the speech worker), kept while Jarvis thinks.
+  const face = { voice: "off", task: null, text: "", heard: "", mood: "neutral" };
 
   const windowSize = () => {
     const scale = faceScale(size);
@@ -116,12 +117,14 @@ export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, 
     await loaded;
     if (target.isDestroyed()) return;
     const expanded = active || lingering !== null;
+    const caption = expanded ? faceCaption(face) : { caption: "", heard: false };
     target.webContents.send("avatar:state", {
       show: true,
       expanded,
       state: expanded ? faceState(face.voice, face.task) : "idle",
       mood: expanded ? face.mood : "neutral",
-      caption: expanded ? face.text : "",
+      caption: caption.caption,
+      heard: caption.heard,
       voiceOn: face.voice !== "off",
       // What ⋯ shows as chosen.
       options: { mode, size, spot: readPlace()?.spot ?? (Number.isFinite(readPlace()?.x) ? null : "bottom-center") },
@@ -138,6 +141,7 @@ export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, 
     lingering = setTimeout(() => {
       lingering = null;
       face.text = "";
+      face.heard = "";
       face.mood = "neutral";
       void publish();
     }, LINGER_MS);
@@ -228,9 +232,15 @@ export function createAvatar({ directory, userData, onOpen, onTalk, onSettings, 
   for (const event of ["display-added", "display-removed", "display-metrics-changed"]) screen.on(event, () => applyBounds());
 
   return {
-    /** From the main window: a voice state change, or what Jarvis is about to say (text, plus a task's outcome). */
-    voice({ state, text, outcome } = {}) {
+    /**
+     * A voice state change, what Jarvis is about to say (text, plus a task's outcome), or the user's words so far
+     * (heard, from the speech worker).
+     */
+    voice({ state, text, outcome, heard } = {}) {
+      // A new request starts with no words yet ("Listening…"), not the last one's.
+      if (state === "hearing" && face.voice !== "hearing") face.heard = "";
       if (typeof state === "string") face.voice = state;
+      if (typeof heard === "string") face.heard = heard.replace(/\s+/g, " ").trim().slice(0, 240);
       if (typeof text === "string" && text) {
         face.text = text.replace(/\s+/g, " ").trim().slice(0, 240);
         face.mood = moodFor(face.text, outcome ?? null);

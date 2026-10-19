@@ -1,4 +1,4 @@
-/* global bridge, renderVoice, playChunk, onVoiceCommand, toast, stopSpeaking, chime, state, disableVoice, $, stickToBottom: writable, send, cancelVoicePending, autosize, renderComposer, enableVoice, stopRun, togglePause, pickAttachments, attachDropped, attachPasted, persist, renderHeader, newChat, openWorkspaceDialog, runSearch, saveWorkspace, deleteWorkspace, pickWorkspaceFolder, clearWorkspaceFolder, openSettings, selectSettingsTab, setPref, renderPrefs, previewVoice, saveProfile, renderConnections, addMemoryFromForm, addRoutineFromForm, runDueRoutines, checkPermissions, openSetup, pendingConnect: writable, openSource, loadAuth, checkRunner, renderScreen, screenRun, screenshots, openGallery, scrollToLatest, stepGallery */
+/* global bridge, renderVoice, playChunk, onVoiceCommand, showHeard, clearHeard, toast, stopSpeaking, chime, state, disableVoice, $, stickToBottom: writable, send, cancelVoicePending, autosize, renderComposer, enableVoice, stopRun, togglePause, pickAttachments, attachDropped, attachPasted, persist, renderHeader, newChat, openWorkspaceDialog, runSearch, saveWorkspace, deleteWorkspace, pickWorkspaceFolder, clearWorkspaceFolder, openSettings, selectSettingsTab, setPref, renderPrefs, previewVoice, saveProfile, renderConnections, addMemoryFromForm, addRoutineFromForm, runDueRoutines, checkPermissions, openSetup, pendingConnect: writable, openSource, loadAuth, checkRunner, renderScreen, screenRun, screenshots, openGallery, scrollToLatest, stepGallery */
 // Event wiring: the voice process, scrolling, and every control's listeners. Loads after every script it calls into.
 
 /* ---------- voice events ---------- */
@@ -12,6 +12,10 @@ bridge.onVoice((kind, payload) => {
     playChunk(payload);
     return;
   }
+  if (kind === "partial") {
+    showHeard(payload.text);
+    return;
+  }
   if (kind === "command") {
     void onVoiceCommand(payload);
     return;
@@ -22,6 +26,8 @@ bridge.onVoice((kind, payload) => {
     if (payload.source === "wake" || payload.source === "push-to-talk") chime();
   }
   if (payload.note === "no-speech") toast(payload.source === "wake" ? "Didn't catch anything after “Hey Jarvis”." : "Didn't catch anything.", "info");
+  // Back to listening with no request (nothing caught, or a held Ctrl+C after all): drop the live words.
+  if (payload.state === "listening" && state.voiceHeard && !state.voiceHeard.final) clearHeard();
   if (state.voice === "off" && payload.state !== "off") return; // late event after turning voice off
   state.voice = payload.state === "error" ? "off" : payload.state;
   if (state.voice === "off" && state.voiceOn) void disableVoice();
@@ -43,7 +49,8 @@ $("#composer").addEventListener("submit", (event) => {
   void send();
 });
 $("#prompt").addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+  // While it shows what you're saying, the box is Jarvis's: Enter would send half a sentence.
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !state.voiceHeard) {
     event.preventDefault();
     void send();
   }

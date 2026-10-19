@@ -40,7 +40,7 @@ import {
   quickFollowUp,
   typedNeedsUnderstanding,
 } from "./voice/assistant.mjs";
-import { parseVoiceCommand } from "./voice/commands.mjs";
+import { parseVoiceCommand, spokenText } from "./voice/commands.mjs";
 import { createDucker } from "./voice/ducking.mjs";
 import { createHoldKey, HOLD_MS } from "./voice/hold-key.mjs";
 import { ensureVoiceModels, voiceModelPaths } from "./voice/models.mjs";
@@ -763,7 +763,17 @@ async function startVoice(owner) {
         workerState = message.state;
         syncDucking();
         send("voice:state", message);
-      } else if (message.type === "command") send("voice:command", { ...parseVoiceCommand(message.text), text: message.text, source: message.source });
+      } else if (message.type === "partial") {
+        // The words so far while the user talks: in the message box and under the floating face.
+        const text = spokenText(message.text);
+        if (text) {
+          send("voice:partial", { text, source: message.source });
+          avatar?.voice({ heard: text });
+        }
+      } else if (message.type === "command") {
+        avatar?.voice({ heard: spokenText(message.text) });
+        send("voice:command", { ...parseVoiceCommand(message.text), text: message.text, source: message.source });
+      }
     });
     worker.once("exit", (code) => {
       failed(code, voice?.worker === worker);

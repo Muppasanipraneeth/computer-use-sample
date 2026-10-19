@@ -27,7 +27,7 @@ function renderComposer() {
   const hasText = $("#prompt").value.trim().length > 0;
   // While this chat's task works, Send stays for follow-ups (add, change, queue next) next to Pause and Stop.
   $("#send").hidden = running && !hasText && !state.judging;
-  $("#send").disabled = state.sending || state.judging || (!running && Boolean(reason)) || !hasText;
+  $("#send").disabled = state.sending || state.judging || Boolean(state.voiceHeard) || (!running && Boolean(reason)) || !hasText;
   $("#send").classList.toggle("busy", state.sending || state.judging);
   $("#send").setAttribute("aria-label", running ? "Send to the running task" : "Send");
   $("#stop").hidden = !running;
@@ -52,7 +52,9 @@ function renderComposer() {
         ? "Paused. Change the plan, or press play to continue…"
         : "Add to it, change it, or ask for something next…"
       : "Ask Jarvis anything…";
-  $("#composer-hint").textContent = state.voicePending
+  // While the box shows what you're saying (live, then the whole request being understood).
+  const heardHint = state.voiceHeard ? (state.voiceHeard.final ? "Working out what you meant…" : "Pause when you're done") : null;
+  $("#composer-hint").textContent = heardHint ?? (state.voicePending
     ? "Confirming · Esc or talk over it to change"
     : state.judging
       ? "Working out what you meant…"
@@ -71,7 +73,7 @@ function renderComposer() {
               ? "Hold Control to talk"
               : state.voice === "listening" && state.voiceShortcut
                 ? `Too loud? ${LISTEN_KEYS}`
-                : "");
+                : ""));
   $("#composer-hint").classList.toggle("warn", Boolean(reason) && !running);
 }
 

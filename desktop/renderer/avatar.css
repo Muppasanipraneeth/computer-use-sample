@@ -87,6 +87,9 @@ body { font-family: var(--font-sans); }
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
 .caption.quiet { color: rgb(255 253 244 / 0.7); font-style: italic; }
+.caption.heard { background: rgb(255 253 244 / 0.92); color: #1d211f; }
+.caption.heard::before { content: "“"; }
+.caption.heard::after { content: "”"; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes think { 50% { transform: translateY(-5px); opacity: 0.6; } }
