@@ -201,6 +201,9 @@ def main():
         namespace.update(read=web_instruments.read, web=web_instruments.web)
     if os.environ.get("JARVIS_APPS_GATEWAY"):
         namespace.update(apps=load_instrument("apps_instrument").apps)
+    if os.environ.get("JARVIS_MEMORY_FILE"):
+        memory = load_instrument("memory_instrument")
+        namespace.update(remember=memory.remember, forget=memory.forget)
     emit({"ready": True, "platform": sys.platform})
     if "--check" in sys.argv:
         return

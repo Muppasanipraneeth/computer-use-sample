@@ -18,7 +18,7 @@ from .local_browser_host import BrowserLease, LocalBrowserHost
 from .model_providers import ExternalCodeModel
 from .processes import assert_active
 from .screen import RunScreen
-from .user_profile import load_profile
+from .user_profile import load_memories, load_profile, memory_path
 
 
 @dataclass
@@ -33,6 +33,9 @@ class RunExecutionContext:
     # Model loops await this before every model call: it blocks while the run is paused and returns the user's
     # queued follow-ups ([{"mode": "add" | "redirect", "message": str, "attachments": [...]}]) for that turn.
     next_turn: Callable[[], Awaitable[list[dict[str, Any]]]]
+    # ask(text, kind="question" | "approval", options=[...], detail=None) → the user's answer ("approve"/"deny" for an
+    # approval). The question shows on the run record until answered; Stop raises CancelledError.
+    ask: Callable[..., Awaitable[str]]
     # This run's handle on the runner's one screen lock: screen steps, desktop captures and input release hold it.
     screen: RunScreen
     # The runner's shared headless Chromium for local background browsing.
@@ -75,7 +78,7 @@ async def hold_browser(context: RunExecutionContext) -> None:
 async def execute_scenario(context: RunExecutionContext) -> None:
     from .browser import launch_browser_session
     from .desktop.app_session import DesktopAppSession
-    from .desktop.runtime import launch_python_runtime
+    from .desktop.runtime import PythonRuntime, launch_python_runtime
     from .model_providers import create_external_code_model, run_external_code_loop
     from .model_selection import parse_model_selection
     from .responses_loop import create_default_responses_client, run_responses_code_loop
@@ -92,7 +95,7 @@ async def execute_scenario(context: RunExecutionContext) -> None:
         client = create_external_code_model(selection)
     lab_id = run["labId"]
     lab_server = None
-    python = None
+    python: PythonRuntime | None = None
     session: Any = None
     gateway: BrowserGateway | None = None
     apps_gateway: AppsGateway | None = None
@@ -112,6 +115,13 @@ async def execute_scenario(context: RunExecutionContext) -> None:
             raise RunnerCoreError("Run cleanup failed: " + "; ".join(str(error) for error in errors),
                                   code="desktop_cleanup_failed" if release_failed else "cleanup_failed",
                                   hint="Release held keys and mouse buttons, check desktop input permissions, then restart the runner before starting another run." if release_failed else None)
+
+    async def approve_tool(text: str, detail: str) -> bool:
+        # The step that called apps.run is blocked on this answer: the user's thinking time must not trip its deadline.
+        if python is None:
+            return await context.ask(text, kind="approval", detail=detail) == "approve"
+        with python.deadline_paused():
+            return await context.ask(text, kind="approval", detail=detail) == "approve"
 
     async def run_model(active_instructions: str) -> dict[str, Any]:
         if selection.provider == "openai":
@@ -143,6 +153,8 @@ async def execute_scenario(context: RunExecutionContext) -> None:
                 # read() and web work in the background on any setup: Cloudflare's cloud browser when configured,
                 # otherwise the runner's shared headless Chromium. Either way the user's screen is left alone.
                 extra_environment["JARVIS_WEB_INSTRUMENTS"] = "1"
+                # remember()/forget() write the same memory.json the desktop app shows in Settings → You.
+                extra_environment["JARVIS_MEMORY_FILE"] = str(memory_path())
                 account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
                 api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
                 if account_id and api_token:
@@ -158,14 +170,22 @@ async def execute_scenario(context: RunExecutionContext) -> None:
                         await context.emit_event({"type": "run_progress", "level": "warn", "detail": str(error),
                                                   "message": "The background browser on this computer is unavailable."})
                     else:
-                        extra_environment["JARVIS_BROWSER_CDP"] = browser_lease.endpoint
+                        extra_environment["JARVIS_BROWSER_CDP_FILE"] = browser_lease.endpoint_file
+                        # Until the browser can open, read() and web raise the reason; the host keeps trying all run.
+                        extra_environment["JARVIS_BROWSER_BLOCKED_FILE"] = browser_lease.blocked_file
+                        if browser_lease.blocked:
+                            await context.emit_event({"type": "run_progress", "level": "warn", "detail": browser_lease.blocked,
+                                                      "message": "The background browser on this computer can't open yet."})
+                        if browser_lease.notice:
+                            await context.emit_event({"type": "run_progress", "level": "warn", "detail": browser_lease.notice,
+                                                      "message": "Sign in to websites again."})
                         await context.emit_event({"type": "run_progress", "level": "ok",
                                                   "detail": "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to use Cloudflare's cloud browser instead.",
                                                   "message": "Web browsing runs in a background browser on this computer."})
                 composio_key = composio_api_key()
                 if composio_key:
                     # Model code reaches connected apps only through this gateway; the key never enters the worker.
-                    apps_gateway = await AppsGateway.start(composio_key)
+                    apps_gateway = await AppsGateway.start(composio_key, approve=approve_tool)
                     extra_environment["JARVIS_APPS_GATEWAY"] = apps_gateway.base_url
                     await context.emit_event({"type": "run_progress", "level": "ok", "detail": "gateway on 127.0.0.1",
                                               "message": "Connected apps are available through Composio."})
@@ -176,6 +196,8 @@ async def execute_scenario(context: RunExecutionContext) -> None:
             session.screen = context.screen
             session.browser_gateway = gateway.base_url if gateway is not None else None
             session.web_instruments = web
+            # Model steps take turns with hand-overs of the browser profile to the Settings sign-in window.
+            session.browser_lease = browser_lease
             session.apps_gateway = apps_gateway.base_url if apps_gateway is not None else None
             await session.frontmost()
             bound_to = f"the already-open {app}" if app else "the primary display"
@@ -190,12 +212,15 @@ async def execute_scenario(context: RunExecutionContext) -> None:
             host = getattr(python, "platform", None) or sys.platform
             # Only the general desktop task gets the profile: a run bound to one app (Unreal) has no use for it.
             profile = load_profile() if app is None else None
+            memories = load_memories() if app is None else None
             if desktop_label is None:
                 desktop_instructions = instructions(run["scenarioId"], session.page.url, platform=host, web=web,
-                                                    cloud=gateway is not None, apps=apps_gateway is not None, profile=profile)
+                                                    cloud=gateway is not None, apps=apps_gateway is not None, profile=profile,
+                                                    memories=memories)
             else:
                 desktop_instructions = instructions(run["scenarioId"], session.page.url, desktop_label, platform=host,
-                                                    web=web, cloud=gateway is not None, apps=apps_gateway is not None, profile=profile)
+                                                    web=web, cloud=gateway is not None, apps=apps_gateway is not None, profile=profile,
+                                                    memories=memories)
             result = await run_model(desktop_instructions)
             if routine_captures:
                 await context.capture_screenshot(session, "desktop-final")

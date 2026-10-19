@@ -1,7 +1,7 @@
 """The runner's camelCase HTTP and version-3 replay contracts.
 
-Optional properties are omitted on the wire, except fields listed in `nullable`, where null means
-"no limit". Start requests reject unknown fields.
+Optional properties are omitted on the wire, except fields listed in `nullable`, where null carries meaning ("no
+limit", "nothing pending"). Start requests reject unknown fields.
 """
 import re
 from datetime import datetime
@@ -114,9 +114,21 @@ class Attachment(WireModel):
 Attachments = Annotated[list[Attachment], Field(max_length=10)]
 
 
+class RunQuestion(WireModel):
+    nullable = frozenset({"detail"})
+    id: Text
+    kind: Literal["question", "approval"]
+    text: Text
+    # An approval's options are always ["approve", "deny"]; a question's may be empty (free-text answer).
+    options: list[Text]
+    detail: str | None
+    created_at: str
+
+    _date = field_validator("created_at")(valid_timestamp)
+
 
 class RunRecord(WireModel):
-    nullable = frozenset({"max_response_turns"})
+    nullable = frozenset({"max_response_turns", "question"})
     id: Text
     scenario_id: Text
     lab_id: LabId
@@ -133,6 +145,8 @@ class RunRecord(WireModel):
     paused: bool | None = None
     # Images point at their copy in the run directory, folders at the original. Omitted like paused on older records.
     attachments: list[RunAttachment] | None = None
+    # Non-null while the running run waits for the user's answer; live runs carry null otherwise, older records omit it.
+    question: RunQuestion | None = None
 
     _dates = field_validator("started_at", "completed_at")(valid_timestamp)
 
@@ -162,7 +176,7 @@ class BrowserScreenshotArtifact(WireModel):
     captured_at: str
     id: Text
     label: Text
-    mime_type: Literal["image/png"]
+    mime_type: Literal["image/png", "image/jpeg"]
     page_title: Text | None = None
     page_url: Text
     path: Text
@@ -196,6 +210,12 @@ class SteerRunRequest(WireModel):
     message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
     mode: Literal["add", "redirect"]
     attachments: Attachments | None = None
+
+
+class AnswerRunRequest(WireModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=False, validate_by_name=False)
+    question_id: Text
+    answer: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
 
 
 class RunDetail(WireModel):

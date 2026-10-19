@@ -8,7 +8,7 @@ from .desktop.input_rules import shortcut_instruction
 from .desktop.unreal_editor import unreal_editor_card
 from .instruments import instrument_lines
 from .models import ScenarioManifest, validate_wire
-from .user_profile import about_user_lines
+from .user_profile import about_user_lines, memory_lines
 
 
 @lru_cache(maxsize=1)
@@ -43,6 +43,7 @@ def instructions(
     cloud: bool = False,
     apps: bool = False,
     profile: dict[str, str] | None = None,
+    memories: list[str] | None = None,
 ) -> str:
     definition = next(item for item in catalog()["scenarios"] if item["id"] == scenario_id)
     host = platform or sys.platform
@@ -59,6 +60,8 @@ def instructions(
             *copy.deepcopy(definition["instructions"]),
             *(instrument_lines(web=web, cloud=cloud, apps=apps) if definition.get("cloudBrowser") else []),
             *about_user_lines(profile),
+            # Memories go with the profile; remember() exists only in workers given instruments (web runs).
+            *(memory_lines(memories, can_remember=web) if memories is not None else []),
         ])
     return "\n".join([
         f"You are operating a persistent Python/PyAutoGUI desktop session for a {model_label} Jarvis demo harness.",

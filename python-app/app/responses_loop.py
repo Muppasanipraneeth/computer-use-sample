@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from itertools import count
 from typing import Any
 
+from .asking import ASK_TOOL_NAME, ask_tool_definition, ask_user, parse_ask
 from .attachments import attachment_lines, inline_image, task_text
 from .desktop.input_rules import shortcut_instruction
 from .desktop.runtime import PythonRuntimeError
@@ -119,14 +120,18 @@ def build_code_tool_definitions(
 
 
 def session_code_tool_definitions(session: Any) -> list[dict[str, Any]]:
-    return build_code_tool_definitions(
-        session.execution.platform,
-        desktop_app=bool(getattr(session, "desktop_app", False)),
-        target_label=getattr(session, "target_label", "the desktop"),
-        web=bool(getattr(session, "web_instruments", False)),
-        cloud=bool(getattr(session, "browser_gateway", None)),
-        apps=bool(getattr(session, "apps_gateway", None)),
-    )
+    """exec_py for this session, then ask_user."""
+    return [
+        *build_code_tool_definitions(
+            session.execution.platform,
+            desktop_app=bool(getattr(session, "desktop_app", False)),
+            target_label=getattr(session, "target_label", "the desktop"),
+            web=bool(getattr(session, "web_instruments", False)),
+            cloud=bool(getattr(session, "browser_gateway", None)),
+            apps=bool(getattr(session, "apps_gateway", None)),
+        ),
+        ask_tool_definition(),
+    ]
 
 
 def invalid_response(message: str) -> RunnerCoreError:
@@ -158,9 +163,9 @@ def classify_response(response: dict[str, Any]) -> dict[str, Any]:
         if item.get("type") == "reasoning":
             continue
         if item.get("type") == "function_call":
-            if item.get("name") != "exec_py":
+            if item.get("name") not in ("exec_py", ASK_TOOL_NAME):
                 raise invalid_response(
-                    f"Unexpected function call: {item.get('name', '<unknown>')}. Only exec_py is supported."
+                    f"Unexpected function call: {item.get('name', '<unknown>')}. Only exec_py and {ASK_TOOL_NAME} are supported."
                 )
             if "status" in item and item["status"] != "completed":
                 raise invalid_response("The response contains an unfinished function call.")
@@ -174,12 +179,20 @@ def classify_response(response: dict[str, Any]) -> dict[str, Any]:
                 args = json.loads(item["arguments"])
             except ValueError as error:
                 raise invalid_response("Function call arguments are not valid JSON.") from error
+            if item["name"] == ASK_TOOL_NAME:
+                try:
+                    question = parse_ask(args)
+                except ValueError as error:
+                    raise invalid_response(f"{ASK_TOOL_NAME}: {error}") from error
+                call_ids.add(item["call_id"])
+                calls.append({"call_id": item["call_id"], "name": ASK_TOOL_NAME, "question": question})
+                continue
             if not isinstance(args, dict) or set(args) != {"code"} or not isinstance(args.get("code"), str):
                 raise invalid_response("exec_py requires a code string and no other arguments.")
             if not args["code"].strip() or len(args["code"].encode()) > 64 * 1024:
                 raise invalid_response("Python code must be nonempty and at most 64 KiB.")
             call_ids.add(item["call_id"])
-            calls.append({"call_id": item["call_id"], "arguments": item["arguments"], "code": args["code"]})
+            calls.append({"call_id": item["call_id"], "name": "exec_py", "arguments": item["arguments"], "code": args["code"]})
             continue
         if item.get("type") != "message":
             raise RunnerCoreError(
@@ -247,9 +260,14 @@ async def execute_python_tool_call(
         ),
         context.signal,
     )
-    # Steps that may use the screen take turns with other runs; the wait isn't part of the step's deadline.
+    # Steps that may use the screen take turns with other runs; the wait isn't part of the step's deadline. Steps of a
+    # run sharing the local browser also wait while the runner hands it over to (or back from) the sign-in window.
     screen = getattr(session, "screen", None)
-    async with screen.step(call["code"]) if screen is not None else contextlib.nullcontext():
+    browser = getattr(session, "browser_lease", None)
+    async with (
+        browser.step(context.signal) if browser is not None else contextlib.nullcontext(),
+        screen.step(call["code"]) if screen is not None else contextlib.nullcontext(),
+    ):
         result = await await_active(session.execution.execute(call["code"], context.signal), context.signal)
         assert_active(context.signal)
         image_paths: list[str] = []
@@ -373,7 +391,10 @@ async def run_responses_code_loop(
         tool_outputs = []
         for call in classified["calls"]:
             assert_active(context.signal)
-            output, _images = await execute_python_tool_call(context, session, call)
+            if call["name"] == ASK_TOOL_NAME:
+                output: list[dict[str, Any]] = [{"type": "input_text", "text": await ask_user(context, call["question"])}]
+            else:
+                output, _images = await execute_python_tool_call(context, session, call)
             assert_active(context.signal)
             tool_outputs.append({"call_id": call["call_id"], "output": output, "type": "function_call_output"})
         next_input = tool_outputs

@@ -8,6 +8,7 @@ import json
 import os
 import signal as signals
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,43 @@ class PythonRuntimeError(RuntimeError):
 
 class PythonDeadlineError(PythonRuntimeError):
     """A step outlived execution_timeout_ms; the runtime tries to interrupt it before giving up on the session."""
+
+
+class StepDeadline:
+    """A step's time limit that stops counting while paused: a step waiting on the user (an approval for a connected
+    app's tool) must not be cut off by their thinking time. Pauses nest; the remaining time resumes after the last."""
+
+    def __init__(self, seconds: float) -> None:
+        self._loop = asyncio.get_running_loop()
+        self._remaining = seconds
+        self._since = self._loop.time()
+        self._pauses = 0
+        self._changed = asyncio.Event()
+
+    def pause(self) -> None:
+        if self._pauses == 0:
+            self._remaining -= self._loop.time() - self._since
+        self._pauses += 1
+        self._changed.set()
+
+    def resume(self) -> None:
+        self._pauses -= 1
+        if self._pauses == 0:
+            self._since = self._loop.time()
+        self._changed.set()
+
+    async def expired(self) -> None:
+        """Returns once the unpaused time used reaches the limit."""
+        while True:
+            self._changed.clear()
+            if self._pauses:
+                await self._changed.wait()
+                continue
+            left = self._remaining - (self._loop.time() - self._since)
+            if left <= 0:
+                return
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._changed.wait(), left)
 
 
 def read_output(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -74,6 +112,8 @@ class PythonRuntime:
         self._busy = False
         self._input_may_be_held = False
         self._closing: asyncio.Task[None] | None = None
+        # The deadline of the reply being awaited, so deadline_paused() can stop its clock.
+        self._deadline: StepDeadline | None = None
         # The run's handle on the runner's screen lock (set by the scenario runtime); input release holds it.
         self.screen: RunScreen | None = None
         self._stderr = asyncio.create_task(drain_tail(child.stderr))
@@ -109,12 +149,23 @@ class PythonRuntime:
                     raise PythonRuntimeError("Python worker exited.")
                 raise PythonRuntimeError("Python worker closed its output.")
 
+            deadline = StepDeadline(timeout_ms / 1000)
+            self._deadline = deadline
+            reading = asyncio.ensure_future(await_active(read_line(), signal or self.signal))
+            expiry = asyncio.ensure_future(deadline.expired())
             try:
-                line = await asyncio.wait_for(await_active(read_line(), signal or self.signal), timeout_ms / 1000)
-            except asyncio.TimeoutError as error:
-                raise PythonDeadlineError(f"Python execution exceeded {timeout_ms}ms.") from error
+                await asyncio.wait((reading, expiry), return_when=asyncio.FIRST_COMPLETED)
+                if not reading.done():
+                    raise PythonDeadlineError(f"Python execution exceeded {timeout_ms}ms.")
+                line = reading.result()
             except (ValueError, asyncio.LimitOverrunError) as error:
                 raise PythonRuntimeError("Python output exceeds 12 MiB.") from error
+            finally:
+                if self._deadline is deadline:
+                    self._deadline = None
+                for waiter in (reading, expiry):
+                    waiter.cancel()
+                await asyncio.gather(reading, expiry, return_exceptions=True)
             if len(line) > 12 * 1024 * 1024:
                 raise PythonRuntimeError("Python output exceeds 12 MiB.")
             try:
@@ -163,6 +214,20 @@ class PythonRuntime:
             raise
         finally:
             self._busy = False
+
+    @contextlib.contextmanager
+    def deadline_paused(self) -> Iterator[None]:
+        """Stop the running step's deadline clock for the duration, e.g. while the step waits for the user's approval.
+        Stop still ends the step: only the time limit is suspended."""
+        deadline = self._deadline
+        if deadline is None:
+            yield
+            return
+        deadline.pause()
+        try:
+            yield
+        finally:
+            deadline.resume()
 
     def _deadline_note(self) -> dict[str, Any]:
         seconds = f"{self.execution_timeout_ms / 1000:g}"

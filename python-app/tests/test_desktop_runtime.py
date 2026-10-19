@@ -86,6 +86,50 @@ async def test_code_that_ignores_the_interrupt_ends_the_session_before_input_rel
     assert marker.read_text() == "released\n"
 
 
+async def test_time_spent_waiting_for_the_user_does_not_count_toward_the_step_deadline():
+    session = await runtime(execution_timeout_ms=300)
+    try:
+        executing = asyncio.create_task(session.execute("time.sleep(0.6)\nprint('sent')"))
+        await asyncio.sleep(0.1)
+        # The step waits on an approval for 0.4 s of its 0.6 s: only 0.2 s of its 0.3 s budget is used.
+        with session.deadline_paused():
+            await asyncio.sleep(0.4)
+        result = await asyncio.wait_for(executing, 2)
+        assert [item["text"] for item in result["output"]] == ["sent\n"]
+    finally:
+        await session.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Overrunning code is interrupted with SIGINT, which Windows lacks.")
+async def test_the_deadline_resumes_after_the_wait(tmp_path):
+    helper = tmp_path / "release.py"
+    helper.write_text("import json\nprint(json.dumps({'released': True}), flush=True)\n")
+    session = await runtime(release_helper_path=helper, execution_timeout_ms=300)
+    try:
+        executing = asyncio.create_task(session.execute("time.sleep(5)"))
+        await asyncio.sleep(0.1)
+        with session.deadline_paused():
+            await asyncio.sleep(0.3)
+        result = await asyncio.wait_for(executing, 2)
+        assert "still running after 0.3 s" in result["output"][0]["text"]
+    finally:
+        await session.close()
+
+
+async def test_stop_ends_a_step_whose_deadline_is_paused():
+    cancelled = asyncio.Event()
+    session = await runtime(signal=cancelled, execution_timeout_ms=200)
+    executing = asyncio.create_task(session.execute("time.sleep(60)"))
+    await asyncio.sleep(0.05)
+    with session.deadline_paused():
+        await asyncio.sleep(0.3)
+        assert not executing.done(), "the paused deadline does not fire"
+        cancelled.set()
+        with pytest.raises((asyncio.CancelledError, PythonRuntimeError)):
+            await asyncio.wait_for(executing, 1)
+    await asyncio.wait_for(session.close(), 1)
+
+
 async def test_stop_remains_active_after_completed_operation():
     cancelled = asyncio.Event()
     session = await runtime(signal=cancelled)

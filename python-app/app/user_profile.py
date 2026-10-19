@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from .config import desktop_user_data
+from .desktop.memory_instrument import read_memories
 
 # Same caps the desktop app enforces when saving; a hand-edited file is trimmed to them, never trusted beyond them.
 LIMITS = {"name": 500, "callMe": 500, "location": 500, "about": 2000}
@@ -49,3 +50,37 @@ def about_user_lines(profile: dict[str, str] | None) -> list[str]:
     if not lines:
         return []
     return ["About the user (from their Jarvis profile; use only what is written here, never guess other details):", *lines]
+
+
+# Memories share the instructions with the profile, so their section has its own budget.
+MEMORY_SECTION_CHARS = 2000
+
+
+def memory_path() -> Path:
+    """memory.json next to profile.json (written by both the desktop app and the worker's remember()); JARVIS_MEMORY_FILE overrides it."""
+    override = os.environ.get("JARVIS_MEMORY_FILE", "").strip()
+    return Path(override) if override else desktop_user_data() / "memory.json"
+
+
+def load_memories() -> list[str]:
+    """Saved memory texts, oldest first; [] when the file is missing or corrupt."""
+    return [item["text"] for item in read_memories(str(memory_path()))]
+
+
+def memory_lines(memories: list[str], *, can_remember: bool) -> list[str]:
+    """The user's memories (newest last, the oldest dropped past the budget) plus how to add to them."""
+    kept: list[str] = []
+    used = 0
+    for text in reversed(memories):
+        used += len(text) + 3
+        if used > MEMORY_SECTION_CHARS:
+            break
+        kept.insert(0, f"- {text}")
+    lines = ["Things the user asked you to remember:", *kept] if kept else []
+    if can_remember:
+        lines.append(
+            "When the user asks you to remember something, or states a lasting preference or fact about themselves, call remember('...') "
+            "in your Python code with one short sentence; forget('...') removes memories containing that text and returns how many. "
+            "The user can see and edit these memories in Jarvis Settings → You."
+        )
+    return lines

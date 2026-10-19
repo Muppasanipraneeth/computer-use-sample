@@ -15,6 +15,15 @@ from app.errors import RunnerCoreError
 from app.processes import OwnedProcess, child_environment
 
 
+def png_bytes(width, height):
+    import io
+
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), "white").save(buffer, "PNG")
+    return buffer.getvalue()
+
+
 class FakeProcess:
     def __init__(self):
         self.process = SimpleNamespace(returncode=None)
@@ -41,7 +50,7 @@ async def browser_harness(monkeypatch):
         title=AsyncMock(return_value="The lab"),
         url="http://127.0.0.1:9999/index.html",
         bring_to_front=AsyncMock(),
-        screenshot=AsyncMock(),
+        screenshot=AsyncMock(return_value=png_bytes(40, 30)),
     )
     context = SimpleNamespace(new_page=AsyncMock(return_value=page), close=AsyncMock())
     browser = SimpleNamespace(new_context=AsyncMock(return_value=context), close=AsyncMock())
@@ -119,7 +128,8 @@ async def test_browser_preview_metadata_and_frontmost(browser_harness, tmp_path)
         capture = await session.capture_screenshot("A / strange: label!")
         assert capture["currentUrl"] == browser_harness.page.url
         assert capture["pageTitle"] == "The lab"
-        assert capture["path"].endswith("001-a-strange-label.png")
+        assert capture["path"].endswith("001-a-strange-label.jpg")
+        assert capture["mimeType"] == "image/jpeg"
         assert capture["id"] == "screenshot-1"
         assert capture["capturedAt"].endswith("Z")
         await session.frontmost()
@@ -272,7 +282,7 @@ async def test_real_owned_chromium_cdp_operations_and_cleanup(tmp_path):
         assert await session.page.locator("h1").inner_text() == "Ready"
         assert await session.page.evaluate("({title: document.title})") == {"title": "Python CDP smoke"}
         screenshot = await session.capture_screenshot("CDP smoke")
-        assert Path(screenshot["path"]).read_bytes().startswith(b"\x89PNG")
+        assert Path(screenshot["path"]).read_bytes().startswith(b"\xff\xd8")
         assert screenshot["pageTitle"] == "Python CDP smoke"
     finally:
         await session.close()

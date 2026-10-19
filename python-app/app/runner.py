@@ -16,10 +16,12 @@ from .config import Settings
 from .errors import RunnerCoreError
 from .local_browser_host import LocalBrowserHost
 from .models import (
+    AnswerRunRequest,
     BrowserScreenshotArtifact,
     BrowserState,
     RunDetail,
     RunEvent,
+    RunQuestion,
     RunRecord,
     StartRunRequest,
     SteerRunRequest,
@@ -27,7 +29,7 @@ from .models import (
 )
 from .processes import await_active
 from .screen import RunScreen, ScreenLock
-from .storage import RunStorage, run_in_thread, validate_run_id
+from .storage import RunStorage, run_in_thread, store_screenshot, validate_run_id
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,10 @@ class InternalRun:
     resumed: asyncio.Event = field(default_factory=_set_event)
     # This run's handle on the shared screen lock, created when execution starts.
     screen: RunScreen | None = None
+    # One question at a time: a second asker (e.g. an approval from parallel tool code) waits for the first to settle.
+    ask_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Resolved with the user's answer to detail["run"]["question"]; None when nothing is pending.
+    answer: asyncio.Future | None = None
 
 
 SCREEN_WAIT_EVENT = {"type": "run_progress", "level": "warn", "message": "Waiting for the screen…",
@@ -114,7 +120,7 @@ class RunnerManager:
             "id": run_id, "scenarioId": scenario["id"], "labId": scenario["labId"], "browserMode": "headful",
             "maxResponseTurns": request.get("maxResponseTurns", 24), "model": request.get("model", self.settings.default_model),
             "prompt": request["prompt"], "status": "running", "startedAt": timestamp(), "paused": False,
-            "attachments": planned,
+            "attachments": planned, "question": None,
         })
         # Reserve admission before the first await, including workspace copying.
         started = asyncio.Event()
@@ -225,7 +231,7 @@ class RunnerManager:
         context = self.contexts.get(run_id)
         if context is None or context.stopping or context.finalizing or context.detail["run"]["status"] != "running":
             raise RunnerCoreError(f"Run {run_id} is not running.", code="run_not_running", status_code=409,
-                                  hint="Follow-ups, pause, and resume only apply to a running run. Start a new run instead.")
+                                  hint="Follow-ups, answers, pause, and resume only apply to a running run. Start a new run instead.")
         return context
 
     async def steer_run(self, run_id: str, input: Any) -> dict:
@@ -267,6 +273,62 @@ class RunnerManager:
             await await_active(context.resumed.wait(), context.signal)
         steers, context.steers = context.steers, []
         return steers
+
+    async def _ask(self, context: InternalRun, text: str, *, kind: str = "question", options: list[str] | None = None,
+                   detail: str | None = None) -> str:
+        """Hold the question on the run record until answer_run resolves it; Stop ends the wait with CancelledError.
+        Model loops ask between steps; the apps gateway asks for approval from inside a step."""
+        async with context.ask_lock:
+            # An approval's answer is always one of these, whatever the asker suggested.
+            options = ["approve", "deny"] if kind == "approval" else options or []
+            question = validate_wire(RunQuestion, {"id": str(uuid4()), "kind": kind, "text": text, "options": options,
+                                                  "detail": detail, "createdAt": timestamp()})
+            answer: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+            context.answer = answer
+            context.detail["run"]["question"] = question
+            try:
+                if kind == "approval":
+                    event = {"message": "Approval requested.", "detail": text + (f"\n{detail}" if detail else "")}
+                else:
+                    event = {"message": "Waiting for your answer.", "detail": text}
+                await await_active(self.emit_event(context, {"type": "run_progress", "level": "warn", **event}), context.signal)
+                return await await_active(answer, context.signal)
+            finally:
+                if context.answer is answer:
+                    context.answer = None
+                # Unanswered (Stop, or the asking step gave up): withdraw it. The terminal record clears it too.
+                run = context.detail["run"]
+                if run.get("question") is not None and run["question"]["id"] == question["id"]:
+                    run["question"] = None
+
+    async def answer_run(self, run_id: str, input: Any) -> dict:
+        request = validate_wire(AnswerRunRequest, input)
+        context = self._running(run_id)
+        question = context.detail["run"].get("question")
+        pending = context.answer
+        if question is None or question["id"] != request["questionId"] or pending is None or pending.done():
+            raise RunnerCoreError(f"Run {run_id} has no pending question with that id.", code="no_pending_question",
+                                  status_code=409, hint="Refresh the run: the question was already answered or withdrawn.")
+        answer = request["answer"]
+        approval = question["kind"] == "approval"
+        if approval and answer not in ("approve", "deny"):
+            raise RunnerCoreError('An approval takes the answer "approve" or "deny".', code="invalid_answer",
+                                  status_code=400, hint='Send {"answer": "approve"} or {"answer": "deny"}.')
+        # Settled before the first await, so a second answer to the same question gets no_pending_question.
+        context.detail["run"]["question"] = None
+        context.answer = None
+        if approval:
+            event = {"level": "ok", "message": "You approved.", "detail": question["text"]} if answer == "approve" else \
+                {"level": "warn", "message": "You declined.", "detail": question["text"]}
+        else:
+            event = {"level": "ok", "message": "You answered.", "detail": answer}
+        try:
+            await self.emit_event(context, {"type": "run_progress", **event})
+        finally:
+            # The event lands first so the run's next steps read after it; the asker resumes even if persisting failed.
+            if not pending.done():
+                pending.set_result(answer)
+        return {"ok": True}
 
     def _stop_others(self, internal: InternalRun, reason: str, *, screen_users_only: bool = False) -> None:
         """Stop every other admitted run (a start in flight is stopped once it registers) without waiting here."""
@@ -315,6 +377,7 @@ class RunnerManager:
             sync_browser_state=lambda session: self.sync_browser_state(internal, session),
             complete_run=lambda **kwargs: self._complete(internal, **kwargs),
             next_turn=lambda: self._next_turn(internal),
+            ask=lambda text, **kwargs: self._ask(internal, text, **kwargs),
             screen=internal.screen, browser_host=self.browser_host,
         )
         try:
@@ -397,6 +460,7 @@ class RunnerManager:
         start = datetime.fromisoformat(context.detail["run"]["startedAt"].replace("Z", "+00:00"))
         duration = max(0, int((datetime.fromisoformat(end.replace("Z", "+00:00")) - start).total_seconds() * 1000))
         record = {**context.detail["run"], "status": status, "completedAt": end, "durationMs": duration, "paused": False,
+                  "question": None,
                   "summary": {**completion, "screenshotCount": 0, "stepCount": 0}}
         try:
             await self.emit_event(context, event, record)
@@ -417,10 +481,10 @@ class RunnerManager:
     async def capture_screenshot(self, context: InternalRun, session: Any, label: str, observation: dict | None = None) -> dict:
         if observation:
             identifier = f"observation-{uuid4()}"
-            path = self.storage.run_dir(context.detail["run"]["id"]) / "screenshots" / f"{identifier}.png"
-            await run_in_thread(lambda: path.write_bytes(base64.b64decode(observation["base64"])))
+            directory = self.storage.run_dir(context.detail["run"]["id"]) / "screenshots"
+            path = await run_in_thread(lambda: store_screenshot(directory, identifier, base64.b64decode(observation["base64"])))
             snapshot = {**await session.read_state(), "id": identifier, "label": label, "path": str(path),
-                        "mimeType": "image/png", "capturedAt": timestamp()}
+                        "mimeType": "image/jpeg", "capturedAt": timestamp()}
         else:
             snapshot = await session.capture_screenshot(label)
         artifact = {"id": snapshot["id"], "label": snapshot["label"], "path": str(snapshot["path"]),

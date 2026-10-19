@@ -53,12 +53,12 @@ class ConnectedApps:
     def __repr__(self) -> str:
         return "apps: apps.connected(), apps.search(query, app=None), apps.run(tool_slug, arguments)"
 
-    def _call(self, method: str, path: str, body: dict | None = None) -> Any:
+    def _call(self, method: str, path: str, body: dict | None = None, timeout: float | None = TIMEOUT) -> Any:
         data = json.dumps(body).encode() if body is not None else None
         headers = {"content-type": "application/json"} if data is not None else {}
         request = urllib.request.Request(self._gateway + path, data=data, method=method, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 raw = response.read()
         except urllib.error.HTTPError as error:
             raw = error.read()
@@ -96,8 +96,12 @@ class ConnectedApps:
         ]
 
     def run(self, tool_slug: str, arguments: dict | None = None) -> Any:
-        """Run one tool as the user and return its data; raises with Composio's message when it fails."""
-        result = self._call("POST", f"/tools/execute/{urllib.parse.quote(str(tool_slug), safe='')}", {"arguments": arguments or {}})
+        """Run one tool as the user and return its data; raises with Composio's message when it fails, and with
+        "The user declined TOOL." when the user turned down a tool that acts for them."""
+        # No client timeout: the gateway may hold the call while the user decides (the runner pauses the step's
+        # deadline meanwhile), and its own 25 s upstream limit bounds the Composio part.
+        path = f"/tools/execute/{urllib.parse.quote(str(tool_slug), safe='')}"
+        result = self._call("POST", path, {"arguments": arguments or {}}, timeout=None)
         if not result.get("successful", True) or result.get("error"):
             raise RuntimeError(f"apps: {tool_slug} failed: {result.get('error') or 'no detail'}")
         data = _trim(result.get("data"))

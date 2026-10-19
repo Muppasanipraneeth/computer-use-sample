@@ -14,10 +14,12 @@ from itertools import count
 from pathlib import Path
 from typing import Any
 
+from .asking import ASK_GUIDANCE, ask_user, parse_ask
 from .attachments import first_image, task_text
 from .errors import RunnerCoreError
 from .processes import assert_active, await_active
 from .responses_loop import execute_python_tool_call, steer_text
+from .storage import model_image_path
 
 SELECTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:-]*$")
 DISPLAYED_IMAGE_NOTE = "The attached image is the last image your code displayed."
@@ -50,6 +52,12 @@ def omp_action_contract(*, web: bool, apps: bool = False) -> str:
         ),
         "Look only to find something on the screen or to check a result that code output cannot confirm.",
         "If your code displays images, the next turn attaches the last one displayed.",
+        (
+            'To ask the user, return {"action":"ask","question":"<text>","kind":"question" or "approval",'
+            '"options":["<choice>", …],"detail":"<exact content, for an approval>"}; options and detail are optional. '
+            "The next turn carries their answer."
+        ),
+        ASK_GUIDANCE,
         'After at least one code action, finish with {"action":"final","text":"<what you did and what happened>"}.',
         "Do not invent an exec_py or exec_js call. Put the Python in the code field.",
     ])
@@ -120,7 +128,7 @@ def assistant_text_from_omp_events(stdout: str) -> str:
     return text
 
 
-def _action_from_value(value: Any) -> dict[str, str] | None:
+def _action_from_value(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     if value.get("action") == "code" and isinstance(value.get("code"), str) and value["code"].strip():
@@ -129,6 +137,11 @@ def _action_from_value(value: Any) -> dict[str, str] | None:
         return {"action": "final", "text": value["text"].strip()}
     if value.get("action") == "look":
         return {"action": "look"}
+    if value.get("action") == "ask":
+        try:
+            return {"action": "ask", "question": parse_ask(value)}
+        except ValueError:
+            return None
     return None
 
 
@@ -208,11 +221,11 @@ def only_looks_at_screen(code: str) -> bool:
     return True
 
 
-def parse_omp_action(text: str) -> dict[str, str]:
+def parse_omp_action(text: str) -> dict[str, Any]:
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     source = (fenced.group(1) if fenced else text).strip()
     decoder = json.JSONDecoder()
-    actions: list[dict[str, str]] = []
+    actions: list[dict[str, Any]] = []
     index = 0
     while index < len(source):
         start = source.find("{", index)
@@ -239,7 +252,7 @@ def parse_omp_action(text: str) -> dict[str, str]:
         "The omp model did not return a JSON action.",
         code="unexpected_model_response",
         status_code=400,
-        hint='The model must return {"action":"code","code":"..."}, {"action":"look"}, or {"action":"final","text":"..."}.',
+        hint='The model must return {"action":"code","code":"..."}, {"action":"look"}, {"action":"ask","question":"..."}, or {"action":"final","text":"..."}.',
     )
 
 
@@ -302,6 +315,8 @@ def _history_text(history: list[dict[str, Any]]) -> str:
             blocks.append(looked)
         elif item["kind"] == "answered":
             blocks.append(ANSWERED_BEFORE_ACTING_NOTE if latest else "You answered before taking any action.")
+        elif item["kind"] == "asked":
+            blocks.append(item["text"])
         else:
             blocks.append(f"The previous reply was not usable JSON:\n{item['text']}\nReply again with one JSON object.")
     return "\n\n".join(blocks)
@@ -412,8 +427,12 @@ async def run_omp_code_loop(
                 context.signal,
             )
             continue
+        if action["action"] == "ask":
+            history.append({"kind": "asked", "text": await ask_user(context, action["question"])})
+            continue
         if action["action"] == "final":
-            if not any(item["kind"] == "code" for item in history):
+            # Asking counts as acting: the user may have answered that nothing should be done.
+            if not any(item["kind"] in ("code", "asked") for item in history):
                 history.append({"kind": "answered"})
                 await await_active(
                     context.emit_event({
@@ -428,7 +447,8 @@ async def run_omp_code_loop(
         if action["action"] == "look" or only_looks_at_screen(action["code"]):
             screenshot = await await_active(context.capture_screenshot(session, f"omp-look-{turn}"), context.signal)
             history.append({"kind": "look", "code": action.get("code")})
-            attachment = (screenshot["path"], SCREEN_IMAGE_NOTE)
+            # The stored screenshot may be downscaled; clicks must use the full-size frame's coordinates.
+            attachment = (model_image_path(screenshot["path"]), SCREEN_IMAGE_NOTE)
             await await_active(
                 context.emit_event({
                     "detail": action.get("code", "look")[:2000], "level": "ok",
@@ -446,7 +466,7 @@ async def run_omp_code_loop(
         )
         history.append({"kind": "code", "code": action["code"], "output": _output_text(output), "images": len(image_paths)})
         if image_paths:
-            attachment = (image_paths[-1], DISPLAYED_IMAGE_NOTE)
+            attachment = (model_image_path(image_paths[-1]), DISPLAYED_IMAGE_NOTE)
     if final_assistant_message is None:
         raise RuntimeError(
             f"Model code loop exhausted the configured {max_response_turns}-turn budget without producing a final assistant message."

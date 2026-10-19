@@ -25,8 +25,9 @@ def instrument_lines(*, web: bool, cloud: bool = False, apps: bool = False) -> l
             "If the app is not connected or no tool fits, do it on the website with web instead."
         ),
         (
-            "Before sending a message or email, or posting anything publicly, show the user the exact text and recipient and "
-            "ask them to confirm, unless they explicitly asked you to send or post it."
+            "apps.run on a tool that sends, posts, creates, updates, deletes, replies, forwards, invites, shares or pays "
+            "first waits for the user's approval, so do not ask them separately; if they decline it raises "
+            "'The user declined <TOOL>.': do not retry it, and say so in your final answer."
         ),
     ] if apps else []
     return [

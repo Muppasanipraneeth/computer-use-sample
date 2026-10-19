@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.errors import RunnerCoreError
-from app.local_browser_host import PROFILE_IN_USE
+from app.local_browser_host import PROFILE_IN_USE_MACOS
 from app.scenario_runtime import RunExecutionContext, browser_profile_directory, execute_scenario
 from app.screen import RunScreen, ScreenLock
 
@@ -18,7 +18,8 @@ def flow(monkeypatch, tmp_path):
     page = SimpleNamespace(url="http://127.0.0.1/lab", bring_to_front=AsyncMock())
     browser = SimpleNamespace(close=AsyncMock(), frontmost=AsyncMock(), page=page, target_label="lab", execution=None)
     server = SimpleNamespace(close=AsyncMock(), url_for=lambda _: "http://127.0.0.1/lab")
-    browser_lease = SimpleNamespace(endpoint="http://127.0.0.1:9222", close=AsyncMock())
+    browser_lease = SimpleNamespace(endpoint_file="/profile/DevToolsActivePort", blocked_file="/profile/JarvisBrowserBlocked",
+                                    blocked=None, notice=None, close=AsyncMock())
     browser_host = SimpleNamespace(lease=AsyncMock(return_value=browser_lease))
     launch_worker = AsyncMock(return_value=worker)
     launch_browser = AsyncMock(return_value=browser)
@@ -36,6 +37,7 @@ def flow(monkeypatch, tmp_path):
                                    "workspacePath": str(tmp_path)}, signal=signal, screenshot_directory=Path(tmp_path),
                                    emit_event=AsyncMock(), capture_screenshot=AsyncMock(),
                                    sync_browser_state=AsyncMock(), complete_run=AsyncMock(), next_turn=AsyncMock(return_value=[]),
+                                   ask=AsyncMock(return_value="approve"),
                                    screen=RunScreen(ScreenLock(), signal), browser_host=browser_host)
     return SimpleNamespace(context=context, worker=worker, browser=browser, server=server, client=client,
                            launch_worker=launch_worker, launch_browser=launch_browser,
@@ -171,24 +173,47 @@ async def test_local_background_browser_leases_the_shared_host_on_the_jarvis_pro
     flow.browser_host.lease.assert_awaited_once_with(str(tmp_path / "profile"))
     environment = flow.launch_worker.await_args.kwargs["extra_environment"]
     assert environment["JARVIS_WEB_INSTRUMENTS"] == "1"
-    assert environment["JARVIS_BROWSER_CDP"] == "http://127.0.0.1:9222"
+    assert environment["JARVIS_BROWSER_CDP_FILE"] == "/profile/DevToolsActivePort"
+    assert environment["JARVIS_BROWSER_BLOCKED_FILE"] == "/profile/JarvisBrowserBlocked"
+    assert "JARVIS_BROWSER_UNAVAILABLE" not in environment
     assert "JARVIS_BROWSER_PROFILE" not in environment
     # The run gives its share back after its worker (and so its CDP connection) is gone.
     flow.browser_lease.close.assert_awaited_once()
     assert flow.worker.screen is context.screen
 
 
-async def test_busy_profile_leaves_the_run_going_and_tells_read_why(flow, monkeypatch):
+async def test_a_blocked_browser_still_leases_so_read_can_recover_later_in_the_run(flow, monkeypatch):
     monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
     monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
-    flow.browser_host.lease.side_effect = RunnerCoreError(PROFILE_IN_USE, code="browser_profile_in_use")
+    flow.browser_lease.blocked = PROFILE_IN_USE_MACOS
     context = flow.context()
     context.detail["run"]["labId"] = "desktop"
     context.detail["run"]["scenarioId"] = "any-task"
     await execute_scenario(context)
     environment = flow.launch_worker.await_args.kwargs["extra_environment"]
-    assert environment["JARVIS_BROWSER_UNAVAILABLE"] == PROFILE_IN_USE
-    assert "JARVIS_BROWSER_CDP" not in environment
+    # The worker gets the endpoint and the blocker file: the host keeps trying, read() reports the blocker meanwhile.
+    assert environment["JARVIS_BROWSER_CDP_FILE"] == "/profile/DevToolsActivePort"
+    assert environment["JARVIS_BROWSER_BLOCKED_FILE"] == "/profile/JarvisBrowserBlocked"
+    assert "JARVIS_BROWSER_UNAVAILABLE" not in environment
+    warnings = [call.args[0] for call in context.emit_event.await_args_list if call.args[0]["level"] == "warn"]
+    assert PROFILE_IN_USE_MACOS in [event["detail"] for event in warnings]
+    flow.browser_lease.close.assert_awaited_once()
+    context.complete_run.assert_awaited_once()
+
+
+async def test_a_refused_lease_leaves_the_run_going_and_tells_read_why(flow, monkeypatch):
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    refusal = "The background browser is already open on another profile."
+    flow.browser_host.lease.side_effect = RunnerCoreError(refusal, code="browser_profile_in_use")
+    context = flow.context()
+    context.detail["run"]["labId"] = "desktop"
+    context.detail["run"]["scenarioId"] = "any-task"
+    await execute_scenario(context)
+    environment = flow.launch_worker.await_args.kwargs["extra_environment"]
+    assert environment["JARVIS_BROWSER_UNAVAILABLE"] == refusal
+    assert "JARVIS_BROWSER_CDP_FILE" not in environment
+    flow.browser_lease.close.assert_not_awaited()
     context.complete_run.assert_awaited_once()
 
 

@@ -139,7 +139,7 @@ export const browserScreenshotArtifactSchema = z.object({
   capturedAt: z.string().datetime(),
   id: z.string().min(1),
   label: z.string().min(1),
-  mimeType: z.literal("image/png"),
+  mimeType: z.enum(["image/png", "image/jpeg"]),
   pageTitle: z.string().min(1).optional(),
   pageUrl: z.string().min(1),
   path: z.string().min(1),

@@ -49,6 +49,7 @@ def harness(*responses, steers=None):
         sync_browser_state=AsyncMock(),
         capture_screenshot=AsyncMock(),
         next_turn=AsyncMock(side_effect=lambda: next(turns, [])),
+        ask=AsyncMock(return_value="The blue one"),
     )
     session = SimpleNamespace(
         execution=SimpleNamespace(
@@ -102,6 +103,27 @@ async def test_commentary_continues_and_unphased_message_is_final():
     assert result["final_assistant_message"] == "Finished"
     assert client.create.call_args_list[1].args[0]["input"] == []
     session.execution.execute.assert_not_called()
+
+
+async def test_ask_user_waits_for_the_answer_and_returns_it_as_the_call_output():
+    arguments = {"question": "Which card?", "kind": "question", "options": ["Blue", "Red"], "detail": None}
+    context, session, client = harness(
+        response(call(name="ask_user", arguments=json.dumps(arguments), call_id="ask-1"), response_id="r1"),
+        response(message(), response_id="r2"),
+    )
+    result = await run_responses_code_loop(context, session, "Instructions", 3, client=client)
+    assert result["final_assistant_message"] == "Done."
+    context.ask.assert_awaited_once_with("Which card?", kind="question", options=["Blue", "Red"], detail=None)
+    first, second = (entry.args[0] for entry in client.create.call_args_list)
+    assert [tool["name"] for tool in first["tools"]] == ["exec_py", "ask_user"]
+    assert second["input"] == [{"type": "function_call_output", "call_id": "ask-1",
+                                "output": [{"type": "input_text", "text": "You asked: Which card?\nThe user answered: The blue one"}]}]
+    session.execution.execute.assert_not_called()
+
+
+def test_ask_user_needs_a_question():
+    with pytest.raises(RunnerCoreError):
+        classify_response(response(call(name="ask_user", arguments=json.dumps({"question": "", "kind": "question", "options": [], "detail": None}))))
 
 
 async def test_follow_ups_join_the_next_turn_input_as_user_messages(tmp_path):

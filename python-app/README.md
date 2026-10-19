@@ -57,15 +57,23 @@ Playwright handles browser setup and preview screenshots; PyAutoGUI handles the 
 
 The **Any task** scenario (`any-task`, the Jarvis app's default) picks an instrument per step: PyAutoGUI for this computer's apps, a Cloudflare [Browser Run](https://developers.cloudflare.com/browser-run/) cloud Chromium (`web`, a Playwright page over CDP) for websites it must click or type in, and `read(url)` ([Quick Actions](https://developers.cloudflare.com/browser-run/quick-actions/markdown-endpoint/) markdown) for fast lookups.
 
-Set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (an API token with the **Browser Rendering - Edit** permission) in `.env`, then restart the runner. Without them `web` and `read()` use one headless Chromium on this computer, on Jarvis's browser profile, which the runner shares between all running tasks.
+Set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (an API token with the **Browser Rendering - Edit** permission) in `.env`, then restart the runner. Without them `web` and `read()` use one headless Chromium on this computer, on Jarvis's browser profile, which the runner shares between all running tasks. While the desktop app's sign-in window is open, tasks browse in that window instead (in background tabs), and a sign-in requested while tasks browse makes the runner hand the profile over after the current model step. On macOS both browsers use the real Keychain (**Chromium Safe Storage**; click **Always Allow** when macOS asks once).
 
 `read()` uses the Kitesurf engine first: it is cheaper and faster for reading, but cannot play video or WebGL, pass bot challenges, or keep logged-in sessions, so `read()` retries once on default Chromium and `web` always uses default Chromium.
 
 Model code never sees the token: the worker environment drops both variables, and the runner starts a per-run gateway on `127.0.0.1` behind a random secret path that adds the token to each request.
 
+Any-task runs also get `remember(text)` and `forget(text)`. They edit `memory.json` in the desktop app's data folder (next to `profile.json`; `JARVIS_MEMORY_FILE` overrides the path), the same list shown in Settings → You. Saved memories, newest last and capped at about 2,000 characters, go into the run instructions beside the profile.
+
 ## Several tasks at once
 
 Up to three runs work at the same time (`JARVIS_MAX_CONCURRENT_RUNS` changes the limit); a fourth Start gets HTTP 409 `run_limit_reached`. `GET /api/runs/running` lists the running runs in start order, and `GET /api/runs/active` returns the most recently started one. Steps that use the mouse, keyboard or screen take turns: a run waiting for another run's step shows "Waiting for the screen…", and that wait doesn't count toward its 60-second deadline. Background steps (`read()`, `web`, `apps`, plain Python) run alongside.
+
+## Disk use
+
+Screenshots are stored as JPEG (quality 85, at most 1920 px wide). The model still sees full-size PNGs: they are kept in `runs/<id>/model-frames/` until a day after the run ends.
+
+At startup and every 6 hours the runner deletes finished runs older than `JARVIS_KEEP_DAYS` (default 30) and all but the newest `JARVIS_KEEP_RUNS` (default 50) finished runs. Running runs are never touched. A run's workspace copy is deleted a day after the run finishes, and pasted images in the desktop app's `attachments` folder are deleted after 7 days.
 
 ## Interruption and Recovery
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from typing import Any
 
 from ..errors import RunnerCoreError
 from ..screen import RunScreen
+from ..storage import store_screenshot
 from .input_rules import desktop_permission_hint
 
 
@@ -35,6 +37,8 @@ class DesktopAppSession:
         self.browser_gateway: str | None = None
         # True when the worker has the background web instruments (read and web), cloud or local.
         self.web_instruments = False
+        # This run's share of the local background browser (app/local_browser_host.BrowserLease); steps hold its gate.
+        self.browser_lease: Any = None
         # Gateway base URL when this run's worker has the apps instrument (Composio-connected accounts).
         self.apps_gateway: str | None = None
         # The run's handle on the runner's screen lock: a capture must not land in the middle of another run's step.
@@ -66,16 +70,14 @@ class DesktopAppSession:
         width, height = int(parts[0]), int(parts[1])
         encoded = str(image["image_url"]).split(",", 1)[1]
         self._count += 1
-        self.screenshot_dir.mkdir(parents=True, exist_ok=True)
         safe = "".join(char if char.isalnum() else "-" for char in label)[:40] or "frame"
-        path = self.screenshot_dir / f"{self._count:03d}-{safe}.png"
-        path.write_bytes(base64.b64decode(encoded))
+        path = await asyncio.to_thread(store_screenshot, self.screenshot_dir, f"{self._count:03d}-{safe}", base64.b64decode(encoded))
         self.viewport = {"width": width, "height": height}
         return {
             "id": f"screenshot-{self._count}",
             "label": label,
             "path": str(path),
-            "mimeType": "image/png",
+            "mimeType": "image/jpeg",
             "capturedAt": _timestamp(),
             "currentUrl": self.page.url,
             "pageTitle": self.target_label,

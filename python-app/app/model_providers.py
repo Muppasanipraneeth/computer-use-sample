@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from itertools import count
 from typing import Any
 
+from .asking import ASK_TOOL_NAME, ask_user, parse_ask
 from .attachments import task_text
 from .errors import RunnerCoreError
 from .model_selection import ModelSelection
@@ -68,21 +69,22 @@ class ExternalCodeModel:
         instructions: str,
         prompt: list[dict[str, Any]],
         turns: list[dict[str, Any]],
-        tool: dict[str, Any],
+        tools: list[dict[str, Any]],
         signal: asyncio.Event | None,
     ) -> dict[str, Any]:
+        names = {tool["name"] for tool in tools}
         if self.selection.provider == "anthropic":
-            body = build_anthropic_body(self.selection.model_id, instructions, prompt, turns, tool)
+            body = build_anthropic_body(self.selection.model_id, instructions, prompt, turns, tools)
             payload = await post_json(
                 ANTHROPIC_URL,
                 {"x-api-key": self._key, "anthropic-version": "2023-06-01"},
                 body,
                 signal,
             )
-            return classify_anthropic_response(payload, tool["name"])
-        body = build_compatible_body(self.selection.model_id, instructions, prompt, turns, tool)
+            return classify_anthropic_response(payload, names)
+        body = build_compatible_body(self.selection.model_id, instructions, prompt, turns, tools)
         payload = await post_json(self._url, {"authorization": f"Bearer {self._key}"}, body, signal)
-        return classify_compatible_response(payload, tool["name"])
+        return classify_compatible_response(payload, names)
 
 
 def create_external_code_model(selection: ModelSelection) -> ExternalCodeModel:
@@ -136,12 +138,29 @@ def _compatible_user_content(items: list[dict[str, Any]]) -> str | list[dict[str
     return [{"type": "text", "text": text}, *images] if images else text
 
 
+def _call_input(call: dict[str, Any]) -> dict[str, Any]:
+    """The arguments a replayed call was made with."""
+    return call["input"] if call["name"] == ASK_TOOL_NAME else {"code": call["code"]}
+
+
+def _parse_call(name: str, call_id: str, arguments: Any) -> dict[str, Any]:
+    """One validated tool call: exec_py carries its code, ask_user its parsed question and the raw input for replay."""
+    if name == ASK_TOOL_NAME:
+        try:
+            return {"id": call_id, "name": name, "input": arguments, "question": parse_ask(arguments)}
+        except ValueError as error:
+            raise _unexpected(f"{ASK_TOOL_NAME}: {error}") from error
+    if not isinstance(arguments, dict) or set(arguments) != {"code"} or not isinstance(arguments.get("code"), str):
+        raise _unexpected("exec_py requires a code string and no other arguments.")
+    return {"id": call_id, "name": name, "code": arguments["code"]}
+
+
 def build_anthropic_body(
     model_id: str,
     instructions: str,
     prompt: list[dict[str, Any]],
     turns: list[dict[str, Any]],
-    tool: dict[str, Any],
+    tools: list[dict[str, Any]],
 ) -> dict[str, Any]:
     messages: list[dict[str, Any]] = [{"role": "user", "content": _anthropic_user_blocks(prompt)}]
     for turn in turns:
@@ -149,7 +168,7 @@ def build_anthropic_body(
         if turn.get("commentary"):
             content.append({"type": "text", "text": turn["commentary"]})
         for call in turn["calls"]:
-            content.append({"type": "tool_use", "id": call["id"], "name": call["name"], "input": {"code": call["code"]}})
+            content.append({"type": "tool_use", "id": call["id"], "name": call["name"], "input": _call_input(call)})
         messages.append({"role": "assistant", "content": content})
         results = []
         for result in turn["results"]:
@@ -164,7 +183,7 @@ def build_anthropic_body(
         "max_tokens": 8192,
         "model": model_id,
         "system": instructions,
-        "tools": [{"name": tool["name"], "description": tool["description"], "input_schema": tool["parameters"]}],
+        "tools": [{"name": tool["name"], "description": tool["description"], "input_schema": tool["parameters"]} for tool in tools],
         "messages": messages,
     }
 
@@ -174,7 +193,7 @@ def build_compatible_body(
     instructions: str,
     prompt: list[dict[str, Any]],
     turns: list[dict[str, Any]],
-    tool: dict[str, Any],
+    tools: list[dict[str, Any]],
 ) -> dict[str, Any]:
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": instructions},
@@ -188,7 +207,7 @@ def build_compatible_body(
                 {
                     "id": call["id"],
                     "type": "function",
-                    "function": {"name": call["name"], "arguments": json.dumps({"code": call["code"]})},
+                    "function": {"name": call["name"], "arguments": json.dumps(_call_input(call))},
                 }
                 for call in turn["calls"]
             ],
@@ -211,10 +230,10 @@ def build_compatible_body(
         "max_tokens": 8192,
         "model": model_id,
         "messages": messages,
-        "tools": [{
-            "type": "function",
-            "function": {"name": tool["name"], "description": tool["description"], "parameters": tool["parameters"]},
-        }],
+        "tools": [
+            {"type": "function", "function": {"name": tool["name"], "description": tool["description"], "parameters": tool["parameters"]}}
+            for tool in tools
+        ],
     }
 
 
@@ -229,13 +248,13 @@ def _error_message(payload: dict[str, Any]) -> str:
     return "The model API rejected the request."
 
 
-def classify_anthropic_response(payload: dict[str, Any], tool_name: str) -> dict[str, Any]:
+def classify_anthropic_response(payload: dict[str, Any], tool_names: set[str]) -> dict[str, Any]:
     if payload.get("type") == "error" or payload.get("error"):
         raise _unexpected(_error_message(payload))
     content = payload.get("content")
     if not isinstance(content, list):
         raise _unexpected("Claude response content is missing.")
-    calls: list[dict[str, str]] = []
+    calls: list[dict[str, Any]] = []
     texts: list[str] = []
     for block in content:
         if not isinstance(block, dict):
@@ -249,11 +268,9 @@ def classify_anthropic_response(payload: dict[str, Any], tool_name: str) -> dict
             raise _unexpected(f"Unsupported Claude content: {block.get('type')}.")
         tool_input = block.get("input")
         call_id = block.get("id")
-        if block.get("name") != tool_name or not isinstance(call_id, str) or not call_id.strip():
+        if block.get("name") not in tool_names or not isinstance(call_id, str) or not call_id.strip():
             raise _unexpected("Claude returned an invalid tool call.")
-        if not isinstance(tool_input, dict) or set(tool_input) != {"code"} or not isinstance(tool_input.get("code"), str):
-            raise _unexpected("exec_py requires a code string and no other arguments.")
-        calls.append({"id": call_id, "name": tool_name, "code": tool_input["code"]})
+        calls.append(_parse_call(block["name"], call_id, tool_input))
     commentary = "\n\n".join(texts)
     if calls:
         return {"kind": "calls", "calls": calls, "commentary": commentary}
@@ -262,7 +279,7 @@ def classify_anthropic_response(payload: dict[str, Any], tool_name: str) -> dict
     raise _unexpected("Claude returned no tool call or final answer.")
 
 
-def classify_compatible_response(payload: dict[str, Any], tool_name: str) -> dict[str, Any]:
+def classify_compatible_response(payload: dict[str, Any], tool_names: set[str]) -> dict[str, Any]:
     if payload.get("error"):
         raise _unexpected(_error_message(payload))
     choices = payload.get("choices")
@@ -275,14 +292,14 @@ def classify_compatible_response(payload: dict[str, Any], tool_name: str) -> dic
     raw_calls = message.get("tool_calls") or []
     if not isinstance(raw_calls, list):
         raise _unexpected("Compatible API tool calls are malformed.")
-    calls: list[dict[str, str]] = []
+    calls: list[dict[str, Any]] = []
     for call in raw_calls:
         if not isinstance(call, dict):
             raise _unexpected("Compatible API tool calls are malformed.")
         raw_function = call.get("function")
         function: dict[str, Any] = raw_function if isinstance(raw_function, dict) else {}
         call_id = call.get("id")
-        if function.get("name") != tool_name or not isinstance(call_id, str) or not call_id.strip():
+        if function.get("name") not in tool_names or not isinstance(call_id, str) or not call_id.strip():
             raise _unexpected("Compatible API returned an invalid tool call.")
         arguments = function.get("arguments")
         if isinstance(arguments, str):
@@ -290,9 +307,7 @@ def classify_compatible_response(payload: dict[str, Any], tool_name: str) -> dic
                 arguments = json.loads(arguments)
             except json.JSONDecodeError as error:
                 raise _unexpected("Function call arguments are not valid JSON.") from error
-        if not isinstance(arguments, dict) or set(arguments) != {"code"} or not isinstance(arguments.get("code"), str):
-            raise _unexpected("exec_py requires a code string and no other arguments.")
-        calls.append({"id": call_id, "name": tool_name, "code": arguments["code"]})
+        calls.append(_parse_call(function["name"], call_id, arguments))
     if calls:
         return {"kind": "calls", "calls": calls, "commentary": text}
     if text:
@@ -382,7 +397,7 @@ async def run_external_code_loop(
             instructions=instructions,
             prompt=prompt,
             turns=turns,
-            tool=session_code_tool_definitions(session)[0],
+            tools=session_code_tool_definitions(session),
             signal=context.signal,
         )
         await await_active(
@@ -410,7 +425,9 @@ async def run_external_code_loop(
         results = []
         for call in classified["calls"]:
             assert_active(context.signal)
-            if not call["code"].strip():
+            if call["name"] == ASK_TOOL_NAME:
+                output = [{"type": "input_text", "text": await ask_user(context, call["question"])}]
+            elif not call["code"].strip():
                 output = [{"text": "No code was provided to exec_py.", "type": "input_text"}]
             else:
                 output, _images = await execute_python_tool_call(

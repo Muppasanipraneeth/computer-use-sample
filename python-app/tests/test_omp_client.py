@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.errors import RunnerCoreError
 from app.instruments import instrument_lines
 from app.omp_client import (
     ANSWERED_BEFORE_ACTING_NOTE,
@@ -35,6 +36,7 @@ def harness(*replies, output=None, steers=None, attachments=None):
         capture_screenshot=AsyncMock(side_effect=capture),
         # One list of queued follow-ups per turn, then none.
         next_turn=AsyncMock(side_effect=lambda: next(turns, [])),
+        ask=AsyncMock(return_value="Blue"),
     )
     session = SimpleNamespace(
         desktop_app=True,
@@ -215,6 +217,32 @@ async def test_an_image_sent_with_a_follow_up_is_shown_on_the_next_turn():
     assert calls[1]["image_path"] == "/runs/r/attachments/0-map.png"
     assert "The attached image is map.png, which the user attached to their latest message." in calls[1]["prompt"]
     assert "- image map.png: /runs/r/attachments/0-map.png" in calls[1]["prompt"]
+
+
+async def test_ask_waits_for_the_answer_and_replays_it_on_the_next_turn():
+    asked = json.dumps({"action": "ask", "question": "Which playlist?", "options": ["Blue", "Red"]})
+    context, session, complete, calls = harness(asked, final("Asked and done."))
+    result = await run_omp_code_loop(context, session, "Instructions", 5, "test/model", complete=complete)
+
+    context.ask.assert_awaited_once_with("Which playlist?", kind="question", options=["Blue", "Red"], detail=None)
+    assert "You asked: Which playlist?\nThe user answered: Blue" in calls[1]["prompt"]
+    assert result["final_assistant_message"] == "Asked and done.", "a final after asking is not 'answered before acting'"
+    session.execution.execute.assert_not_awaited()
+
+
+async def test_an_approval_answer_says_whether_to_go_ahead():
+    asked = json.dumps({"action": "ask", "kind": "approval", "question": "Post the tweet", "detail": "Hello world", "options": ["sure"]})
+    context, session, complete, calls = harness(asked, final("Not posted."))
+    context.ask.return_value = "deny"
+    await run_omp_code_loop(context, session, "Instructions", 5, "test/model", complete=complete)
+
+    context.ask.assert_awaited_once_with("Post the tweet", kind="approval", options=["approve", "deny"], detail="Hello world")
+    assert "You asked for approval: Post the tweet\nThe user declined. Do not do it." in calls[1]["prompt"]
+
+
+def test_an_ask_without_a_question_is_not_an_action():
+    with pytest.raises(RunnerCoreError):
+        parse_omp_action('{"action":"ask","question":"  "}')
 
 
 def test_look_is_a_parsed_action():

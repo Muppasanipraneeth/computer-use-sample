@@ -14,11 +14,11 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 from starlette.exceptions import HTTPException
 
-from .config import Settings
+from .config import Settings, desktop_user_data
 from .errors import RunnerCoreError
 from .lease import BackendLease
 from .runner import RunnerManager
-from .storage import validate_run_id
+from .storage import prune_storage, validate_run_id
 
 logger = logging.getLogger(__name__)
 
@@ -67,13 +67,29 @@ def create_app(*, manager: RunnerManager | None = None, settings: Settings | Non
     shutdown = asyncio.Event()
     lease = BackendLease()
 
+    async def housekeeping() -> None:
+        # Startup, then every 6 hours; a failed pass is logged and retried at the next one.
+        while True:
+            try:
+                await asyncio.to_thread(prune_storage, manager.storage.root, keep_runs=manager.settings.keep_runs,
+                                        keep_days=manager.settings.keep_days, active=set(manager.active),
+                                        attachments=desktop_user_data() / "attachments")
+            except Exception:
+                logger.exception("Storage cleanup failed")
+            await asyncio.sleep(6 * 3600)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        cleanup = None
         if acquire_lease:
             lease.acquire()
+            # Only the runner that owns the data folder cleans it (tests build apps without the lease).
+            cleanup = asyncio.create_task(housekeeping())
         try:
             yield
         finally:
+            if cleanup is not None:
+                cleanup.cancel()
             try:
                 await manager.shutdown()
             finally:
@@ -161,6 +177,10 @@ def create_app(*, manager: RunnerManager | None = None, settings: Settings | Non
     async def steer(run_id: str, request: Request) -> dict:
         return await manager.steer_run(run_id, await request.json())
 
+    @app.post("/api/runs/{run_id}/answer", status_code=202)
+    async def answer(run_id: str, request: Request) -> dict:
+        return await manager.answer_run(run_id, await request.json())
+
     @app.post("/api/runs/{run_id}/pause")
     async def pause(run_id: str) -> dict:
         return await manager.pause_run(run_id)
@@ -182,7 +202,8 @@ def create_app(*, manager: RunnerManager | None = None, settings: Settings | Non
             if not path.is_relative_to(directory):
                 raise FileNotFoundError(name)
             payload = await asyncio.to_thread(path.read_bytes)
-            return Response(payload, media_type="image/png")
+            # New runs store JPEGs; runs from before then keep their PNGs.
+            return Response(payload, media_type="image/jpeg" if path.suffix == ".jpg" else "image/png")
         except OSError as error:
             raise RunnerCoreError("Screenshot artifact not found", code="artifact_not_found", status_code=404,
                                   hint="Refresh the run detail and choose a screenshot that still exists on disk.") from error

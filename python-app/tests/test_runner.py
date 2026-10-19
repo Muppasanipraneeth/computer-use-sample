@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import io
 import json
 import threading
 from pathlib import Path
@@ -6,11 +8,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image
 
 from app.config import Settings
 from app.errors import RunnerCoreError
 from app.lab_catalog import list_scenarios
 from app.runner import RunnerManager
+from app.storage import model_image_path
 
 
 @pytest.fixture
@@ -352,17 +356,24 @@ async def test_headless_invalid_ids_and_reset(manager_factory):
 
 
 async def test_exact_model_image_metadata(manager_factory):
+    buffer = io.BytesIO()
+    Image.new("RGB", (2400, 1200), "white").save(buffer, "PNG")
+    png = buffer.getvalue()
+
     async def executor(context):
         session = SimpleNamespace(mode="headful", viewport={"width": 1440, "height": 900}, target_label="lab",
                                   read_state=AsyncMock(return_value={"currentUrl": "http://127.0.0.1/lab", "pageTitle": "Lab"}))
-        await context.capture_screenshot(session, "image", {"base64": "YWJj", "width": 100, "height": 50})
+        await context.capture_screenshot(session, "image", {"base64": base64.b64encode(png).decode(), "width": 2400, "height": 1200})
         await context.complete_run(notes=[])
     manager = manager_factory(executor)
     detail = await manager.start_run(request())
     final = await wait_for_run_status(manager, detail["run"]["id"], "completed")
     image = final["browser"]["screenshots"][0]
-    assert Path(image["path"]).read_bytes() == b"abc"
-    assert (image["source"], image["imageWidth"], image["imageHeight"]) == ("code_tool", 100, 50)
+    # Stored small for people; the metadata and the model's copy keep the full size the model clicks in.
+    with Image.open(image["path"]) as stored:
+        assert (stored.format, stored.size) == ("JPEG", (1920, 960))
+    assert Path(model_image_path(image["path"])).read_bytes() == png
+    assert (image["source"], image["imageWidth"], image["imageHeight"], image["mimeType"]) == ("code_tool", 2400, 1200, "image/jpeg")
 
 
 async def test_null_turn_budget_is_recorded_as_no_limit(manager_factory):
@@ -421,3 +432,58 @@ async def test_stop_while_paused_cancels_the_run(manager_factory):
     assert stopped["run"]["paused"] is False
     assert turns == []
     assert await manager.get_active_run_detail() is None
+
+
+async def pending_question(manager, run_id):
+    async def wait():
+        while (question := (await manager.get_run_detail(run_id))["run"]["question"]) is None:
+            await asyncio.sleep(0.01)
+        return question
+    return await asyncio.wait_for(wait(), 5)
+
+
+async def test_stop_while_waiting_for_an_answer_cancels_the_run_and_clears_the_question(manager_factory):
+    asked: list = []
+
+    async def executor(context):
+        asked.append(await context.ask("Which account?", options=["Work", "Personal"]))
+        await context.complete_run(notes=["done"])
+    manager = manager_factory(executor)
+    run_id = (await manager.start_run(request()))["run"]["id"]
+    question = await pending_question(manager, run_id)
+    assert (question["kind"], question["text"], question["options"], question["detail"]) == ("question", "Which account?", ["Work", "Personal"], None)
+    stopped = await asyncio.wait_for(manager.stop_run(run_id), 5)
+    assert (stopped["run"]["status"], stopped["run"]["question"], asked) == ("cancelled", None, [])
+    assert (await manager.get_replay_bundle(run_id))["run"]["question"] is None
+
+
+async def test_one_question_at_a_time_and_a_steer_while_waiting_reaches_the_next_turn(manager_factory):
+    answers: dict = {}
+    turns: list = []
+
+    async def executor(context):
+        async def ask(name, text, **kwargs):
+            answers[name] = await context.ask(text, **kwargs)
+        await asyncio.gather(ask("first", "Which color?"), ask("second", "Send it?", kind="approval", options=["approve", "deny"], detail="To: a@b.c"))
+        turns.append(await context.next_turn())
+        await context.complete_run(notes=["done"])
+    manager = manager_factory(executor)
+    run_id = (await manager.start_run(request()))["run"]["id"]
+    first = await pending_question(manager, run_id)
+    await manager.steer_run(run_id, {"message": "Hurry.", "mode": "add"})
+    assert await manager.answer_run(run_id, {"questionId": first["id"], "answer": " Blue "}) == {"ok": True}
+    second = await pending_question(manager, run_id)
+    assert second["id"] != first["id"] and second["kind"] == "approval", "the second question waited for the first"
+    assert turns == [], "the steer waits for the next turn"
+    await manager.answer_run(run_id, {"questionId": second["id"], "answer": "deny"})
+    detail = await wait_for_run_status(manager, run_id, "completed")
+    assert answers == {"first": "Blue", "second": "deny"}
+    assert turns == [[{"mode": "add", "message": "Hurry.", "attachments": []}]]
+    progress = [(event["message"], event["level"], event.get("detail")) for event in detail["events"] if event["type"] == "run_progress"]
+    assert progress == [
+        ("Waiting for your answer.", "warn", "Which color?"),
+        ("User instruction added.", "ok", "Added: Hurry."),
+        ("You answered.", "ok", "Blue"),
+        ("Approval requested.", "warn", "Send it?\nTo: a@b.c"),
+        ("You declined.", "warn", "Send it?"),
+    ]

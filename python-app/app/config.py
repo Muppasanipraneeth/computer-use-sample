@@ -46,6 +46,9 @@ class Settings:
     port: int = 4041
     # How many runs may work at once; screen steps from different runs still take turns (app/screen.py).
     max_concurrent_runs: int = 3
+    # Finished runs kept on disk: the newest keep_runs, none older than keep_days (storage.prune_storage).
+    keep_runs: int = 50
+    keep_days: float = 30
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -55,7 +58,9 @@ class Settings:
         return cls(data_root=Path(os.environ.get("JARVIS_DATA_ROOT", APP_ROOT / "data")).resolve(),
                    default_model=os.environ.get("JARVIS_DEFAULT_MODEL", DEFAULT_MODEL),
                    host=os.environ.get("HOST", "127.0.0.1"), port=int(os.environ.get("PORT", "4041")),
-                   max_concurrent_runs=max_concurrent_runs)
+                   max_concurrent_runs=max_concurrent_runs,
+                   keep_runs=max(0, int(os.environ.get("JARVIS_KEEP_RUNS", "50"))),
+                   keep_days=max(0.0, float(os.environ.get("JARVIS_KEEP_DAYS", "30"))))
 
     def capabilities(self) -> dict:
         return {"backendId": "python", "codeTool": "exec_py", "browserModes": ["headful"],

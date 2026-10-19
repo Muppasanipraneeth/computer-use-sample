@@ -15,6 +15,7 @@ from typing import Any, TypeVar
 from .errors import RunnerCoreError
 from .processes import OwnedProcess, assert_active, await_active, bounded, child_environment, drain_tail
 from .screen import RunScreen
+from .storage import store_screenshot
 
 DEFAULT_VIEWPORT = {"width": 1440, "height": 900}
 _T = TypeVar("_T")
@@ -119,16 +120,15 @@ class BrowserSession:
 
     async def capture_screenshot(self, label: str) -> dict[str, Any]:
         self._screenshot_count += 1
-        self.screenshot_dir.mkdir(parents=True, exist_ok=True)
         name = re.sub(r"[^a-z0-9]+", "-", label.strip().lower()).strip("-")[:64] or "capture"
-        path = self.screenshot_dir / f"{self._screenshot_count:03d}-{name}.png"
-        await self._on_page(self.page.screenshot(path=str(path)))
+        png = await self._on_page(self.page.screenshot())
+        path = await asyncio.to_thread(store_screenshot, self.screenshot_dir, f"{self._screenshot_count:03d}-{name}", png)
         return {
             "capturedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             **await self.read_state(),
             "id": f"screenshot-{self._screenshot_count}",
             "label": label,
-            "mimeType": "image/png",
+            "mimeType": "image/jpeg",
             "path": str(path),
         }
 

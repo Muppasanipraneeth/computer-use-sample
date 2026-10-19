@@ -10,6 +10,10 @@ the user pinned to the desktop app's single Composio user (desktop/connections.m
 
 Anything else answers 404 without reaching Composio, so model code cannot create auth configs, delete connections,
 run tools as another user, or send custom credentials.
+
+Tools that act for the user (needs_approval: send, post, create, update, delete, reply, forward, invite, share, pay…)
+are held until the user approves them through the run's question (``approve``); a declined tool answers 403
+"The user declined SLUG." and never reaches Composio.
 """
 
 from __future__ import annotations
@@ -22,7 +26,9 @@ import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Awaitable, Callable
 from http import HTTPStatus
+from typing import Any
 
 COMPOSIO_API = "https://backend.composio.dev/api/v3.1"
 COMPOSIO_USER_ID = "jarvis-local"
@@ -35,6 +41,18 @@ _MAX_RESPONSE = 4 * 1024 * 1024
 _TOOL_SLUG = re.compile(r"[A-Za-z0-9]+_[A-Za-z0-9_]{1,127}")
 _TOOLKITS = re.compile(r"[a-z0-9_-]{1,64}(?:,[a-z0-9_-]{1,64}){0,31}")
 _SEARCH_LIMIT = 50
+# Slug words (TOOLKIT_VERB_OBJECT, split on "_") that mark a tool acting for the user rather than reading. Any such
+# word anywhere in the slug asks first: a needless question costs less than an unapproved email or deletion.
+_ACTING_WORDS = frozenset({
+    "SEND", "POST", "CREATE", "UPDATE", "DELETE", "REPLY", "FORWARD", "INVITE", "SHARE", "PAY",
+    # Same families under other names.
+    "REMOVE", "TRASH", "PUBLISH", "TWEET", "RETWEET", "EDIT", "MODIFY", "UPSERT", "PATCH", "PURCHASE", "TRANSFER",
+})
+_DETAIL_LIMIT = 1500
+_VALUE_LIMIT = 400
+
+# approve(text, detail) → True to run the tool, False when the user declined.
+Approver = Callable[[str, str], Awaitable[bool]]
 
 
 class _Rejected(Exception):
@@ -47,12 +65,33 @@ def _error_body(message: str) -> bytes:
     return json.dumps({"error": {"message": message}}).encode()
 
 
+def needs_approval(slug: str) -> bool:
+    return any(word in _ACTING_WORDS for word in slug.upper().split("_"))
+
+
+def approval_text(slug: str) -> str:
+    """GMAIL_SEND_EMAIL → "Gmail: send email"."""
+    toolkit, _, action = slug.upper().partition("_")
+    return f"{toolkit.capitalize()}: {action.replace('_', ' ').lower()}"
+
+
+def approval_detail(arguments: dict[str, Any]) -> str:
+    """One "name: value" line per argument, long values cut, the whole at most _DETAIL_LIMIT characters."""
+    lines = []
+    for name, value in arguments.items():
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+        lines.append(f"{name}: {text if len(text) <= _VALUE_LIMIT else text[:_VALUE_LIMIT] + '…'}")
+    detail = "\n".join(lines) or "(no arguments)"
+    return detail if len(detail) <= _DETAIL_LIMIT else detail[: _DETAIL_LIMIT - 1] + "…"
+
+
 class AppsGateway:
-    def __init__(self, server: asyncio.base_events.Server, secret: str, api_key: str, upstream: str) -> None:
+    def __init__(self, server: asyncio.base_events.Server, secret: str, api_key: str, upstream: str, approve: Approver) -> None:
         self._server = server
         self._secret = secret
         self._api_key = api_key
         self._upstream = upstream.rstrip("/")
+        self._approve = approve
         self._connections: set[asyncio.Task] = set()
         port = server.sockets[0].getsockname()[1]
         self.base_url = f"http://127.0.0.1:{port}/{secret}"
@@ -61,7 +100,7 @@ class AppsGateway:
         return f"AppsGateway({self.base_url!r})"
 
     @classmethod
-    async def start(cls, api_key: str, *, upstream: str = COMPOSIO_API) -> AppsGateway:
+    async def start(cls, api_key: str, *, approve: Approver, upstream: str = COMPOSIO_API) -> AppsGateway:
         holder: list[AppsGateway] = []
 
         async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -76,15 +115,18 @@ class AppsGateway:
                     gateway._connections.discard(task)
 
         server = await asyncio.start_server(handle, "127.0.0.1", 0, limit=_MAX_HEAD)
-        gateway = cls(server, secrets.token_urlsafe(24), api_key, upstream)
+        gateway = cls(server, secrets.token_urlsafe(24), api_key, upstream, approve)
         holder.append(gateway)
         return gateway
 
-    def _route(self, method: str, path: str, raw_query: str, body: bytes) -> tuple[str, str, bytes | None]:
-        """The Composio request for one allowed local route; anything else is rejected before the network."""
+    def _route(
+        self, method: str, path: str, raw_query: str, body: bytes
+    ) -> tuple[str, str, bytes | None, tuple[str, dict[str, Any]] | None]:
+        """The Composio request for one allowed local route, plus (slug, arguments) when the user must approve it first;
+        anything else is rejected before the network."""
         if method == "GET" and path == "connected_accounts":
             query = urllib.parse.urlencode({"user_ids": COMPOSIO_USER_ID, "statuses": "ACTIVE", "limit": 100})
-            return "GET", f"{self._upstream}/connected_accounts?{query}", None
+            return "GET", f"{self._upstream}/connected_accounts?{query}", None, None
         if method == "GET" and path == "tools":
             given = urllib.parse.parse_qs(raw_query, keep_blank_values=False)
             search: dict[str, str] = {}
@@ -103,7 +145,7 @@ class AppsGateway:
             except ValueError:
                 limit = 10
             search["limit"] = str(max(1, min(limit, _SEARCH_LIMIT)))
-            return "GET", f"{self._upstream}/tools?{urllib.parse.urlencode(search)}", None
+            return "GET", f"{self._upstream}/tools?{urllib.parse.urlencode(search)}", None, None
         if method == "POST" and path.startswith("tools/execute/"):
             slug = path[len("tools/execute/"):]
             if not _TOOL_SLUG.fullmatch(slug):
@@ -116,7 +158,9 @@ class AppsGateway:
             if not isinstance(arguments, dict):
                 raise _Rejected(400, "arguments must be a JSON object.")
             upstream_body = json.dumps({"user_id": COMPOSIO_USER_ID, "arguments": arguments}).encode()
-            return "POST", f"{self._upstream}/tools/execute/{slug.upper()}", upstream_body
+            slug = slug.upper()
+            approval = (slug, arguments) if needs_approval(slug) else None
+            return "POST", f"{self._upstream}/tools/execute/{slug}", upstream_body, approval
         raise _Rejected(404, "Not Found")
 
     def _forward(self, method: str, url: str, data: bytes | None) -> tuple[int, bytes]:
@@ -138,6 +182,27 @@ class AppsGateway:
             # Composio's own text may echo key details; the model needs only what to tell the user.
             return status, _error_body("Composio rejected the API key. Ask the user to check it in Jarvis Settings.")
         return status, body
+
+    async def _hold_for_approval(self, reader: asyncio.StreamReader, slug: str, arguments: dict[str, Any]) -> None:
+        """Wait for the user's answer; a decline or a failed question rejects the tool. Code that hangs up meanwhile
+        (interrupted, worker gone) withdraws the question rather than leave the user approving nothing."""
+        asking = asyncio.ensure_future(self._approve(approval_text(slug), approval_detail(arguments)))
+        # The client sends nothing after its body, so this read finishes only when it disconnects.
+        hung_up = asyncio.ensure_future(reader.read(1))
+        try:
+            await asyncio.wait((asking, hung_up), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in (asking, hung_up):
+                task.cancel()
+            await asyncio.gather(asking, hung_up, return_exceptions=True)
+        if asking.cancelled():
+            if hung_up.done() and not hung_up.cancelled():
+                raise ConnectionResetError("The tool's caller disconnected before the user answered.")
+            raise _Rejected(409, f"The run stopped before the user approved {slug}.")
+        if asking.exception() is not None:
+            raise _Rejected(502, f"Could not ask the user to approve {slug}: {asking.exception()}")
+        if not asking.result():
+            raise _Rejected(403, f"The user declined {slug}.")
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -166,10 +231,12 @@ class AppsGateway:
                     raise _Rejected(413, "The request body is too large.")
                 body = await reader.readexactly(length) if length else b""
                 request = self._route(method, path, raw_query, body)
+                if request[3] is not None:
+                    await self._hold_for_approval(reader, *request[3])
             except _Rejected as rejected:
                 status, payload = rejected.status, _error_body(str(rejected))
             else:
-                status, payload = await asyncio.to_thread(self._forward, *request)
+                status, payload = await asyncio.to_thread(self._forward, *request[:3])
             try:
                 phrase = HTTPStatus(status).phrase
             except ValueError:

@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from app import config
-from app.apps_gateway import COMPOSIO_USER_ID, AppsGateway
+from app.apps_gateway import COMPOSIO_USER_ID, AppsGateway, approval_detail, approval_text, needs_approval
 from app.instruments import instrument_lines
 from app.lab_catalog import instructions
 from app.omp_client import omp_action_contract
@@ -61,9 +61,13 @@ def call(url, method="GET", body=None):
         return error.code, json.loads(error.read())
 
 
+async def approve_all(_text, _detail):
+    return True
+
+
 async def test_connected_accounts_are_pinned_to_the_local_user_with_the_key_injected():
     server, upstream, received = await fake_composio({"GET /api/v3.1/connected_accounts": (200, {"items": []})})
-    gateway = await AppsGateway.start("ck_secret", upstream=upstream)
+    gateway = await AppsGateway.start("ck_secret", approve=approve_all, upstream=upstream)
     try:
         status, payload = await asyncio.to_thread(call, f"{gateway.base_url}/connected_accounts?user_ids=someone-else")
         assert (status, payload) == (200, {"items": []})
@@ -81,7 +85,7 @@ async def test_execute_forwards_only_arguments_as_the_local_user():
     server, upstream, received = await fake_composio(
         {"POST /api/v3.1/tools/execute/GMAIL_SEND_EMAIL": (200, {"data": {"id": "m1"}, "error": None, "successful": True})}
     )
-    gateway = await AppsGateway.start("ck_secret", upstream=upstream)
+    gateway = await AppsGateway.start("ck_secret", approve=approve_all, upstream=upstream)
     try:
         body = {"arguments": {"recipient_email": "a@b.c"}, "user_id": "victim", "custom_auth_params": {"base_url": "https://evil"},
                 "connected_account_id": "ca_other"}
@@ -96,7 +100,7 @@ async def test_execute_forwards_only_arguments_as_the_local_user():
 
 async def test_search_passes_only_query_toolkit_and_limit():
     server, upstream, received = await fake_composio({"GET /api/v3.1/tools": (200, {"items": []})})
-    gateway = await AppsGateway.start("ck", upstream=upstream)
+    gateway = await AppsGateway.start("ck", approve=approve_all, upstream=upstream)
     try:
         url = f"{gateway.base_url}/tools?query=send+email&toolkit_slug=gmail,slack&limit=500&include_deprecated=true&tool_slugs=X"
         assert (await asyncio.to_thread(call, url))[0] == 200
@@ -120,7 +124,7 @@ async def test_search_passes_only_query_toolkit_and_limit():
 ])
 async def test_everything_else_is_404_and_never_reaches_composio(method, path):
     server, upstream, received = await fake_composio({})
-    gateway = await AppsGateway.start("ck", upstream=upstream)
+    gateway = await AppsGateway.start("ck", approve=approve_all, upstream=upstream)
     try:
         status, _ = await asyncio.to_thread(call, f"{gateway.base_url}{path}", method, {} if method == "POST" else None)
         assert status == 404
@@ -134,7 +138,7 @@ async def test_everything_else_is_404_and_never_reaches_composio(method, path):
 
 async def test_rejected_key_is_reported_without_composio_text():
     server, upstream, _ = await fake_composio({"GET /api/v3.1/connected_accounts": (401, {"error": {"message": "key ck_bad invalid"}})})
-    gateway = await AppsGateway.start("ck_bad", upstream=upstream)
+    gateway = await AppsGateway.start("ck_bad", approve=approve_all, upstream=upstream)
     try:
         status, payload = await asyncio.to_thread(call, f"{gateway.base_url}/connected_accounts")
         assert status == 401
@@ -160,7 +164,7 @@ async def test_apps_instrument_lists_searches_and_runs_through_the_gateway():
             "data": {"messages": [{"body": long_text}] * 3, "ids": list(range(40))}, "successful": True}),
         "POST /api/v3.1/tools/execute/SLACK_SEND_MESSAGE": (200, {"data": {}, "error": "channel_not_found", "successful": False}),
     })
-    gateway = await AppsGateway.start("ck", upstream=upstream)
+    gateway = await AppsGateway.start("ck", approve=approve_all, upstream=upstream)
     try:
         apps = load_instrument().ConnectedApps(gateway.base_url)
         assert await asyncio.to_thread(apps.connected) == ["gmail", "slack"]
@@ -180,10 +184,95 @@ async def test_apps_instrument_lists_searches_and_runs_through_the_gateway():
         server.close()
 
 
+@pytest.mark.parametrize(("slug", "asks"), [
+    ("GMAIL_SEND_EMAIL", True), ("GMAIL_REPLY_TO_THREAD", True), ("GMAIL_FORWARD_MESSAGE", True),
+    ("SLACK_CHAT_POST_MESSAGE", True), ("GOOGLECALENDAR_CREATE_EVENT", True),
+    ("NOTION_UPDATE_PAGE", True), ("GITHUB_DELETE_A_REPOSITORY", True), ("SLACK_INVITE_USER_TO_CHANNEL", True),
+    ("GOOGLEDRIVE_SHARE_FILE", True), ("STRIPE_PAY_INVOICE", True), ("gmail_send_email", True),
+    ("GMAIL_FETCH_EMAILS", False), ("SLACK_LIST_ALL_CHANNELS", False), ("GMAIL_GET_PROFILE", False),
+    ("GITHUB_SEARCH_REPOSITORIES", False), ("GMAIL_LIST_SENT_EMAILS", False), ("GOOGLEDRIVE_LIST_SHARED_DRIVES", False),
+    ("POSTHOG_GET_EVENTS", False),
+])
+def test_tools_that_act_for_the_user_need_approval(slug, asks):
+    assert needs_approval(slug) is asks
+
+
+def test_approval_text_and_detail_are_short_and_readable():
+    assert approval_text("GMAIL_SEND_EMAIL") == "Gmail: send email"
+    detail = approval_detail({"recipient_email": "a@b.c", "body": "x" * 5000, "cc": ["d@e.f"]})
+    lines = detail.split("\n")
+    assert lines[0] == "recipient_email: a@b.c" and lines[1].endswith("…") and lines[2] == 'cc: ["d@e.f"]'
+    assert len(approval_detail({f"field{index}": "y" * 300 for index in range(20)})) <= 1500
+
+
+async def test_a_risky_tool_waits_for_approval_then_runs_or_is_declined():
+    server, upstream, received = await fake_composio({
+        "POST /api/v3.1/tools/execute/GMAIL_SEND_EMAIL": (200, {"data": {"id": "m1"}, "successful": True}),
+        "POST /api/v3.1/tools/execute/GMAIL_FETCH_EMAILS": (200, {"data": {"messages": []}, "successful": True}),
+    })
+    asked: list[tuple[str, str]] = []
+    answers: asyncio.Queue[bool] = asyncio.Queue()
+
+    async def approve(text, detail):
+        asked.append((text, detail))
+        return await answers.get()
+
+    gateway = await AppsGateway.start("ck", approve=approve, upstream=upstream)
+    try:
+        apps = load_instrument().ConnectedApps(gateway.base_url)
+        assert await asyncio.to_thread(apps.run, "GMAIL_FETCH_EMAILS", {"max_results": 5}) == {"messages": []}
+        assert asked == [], "reading needs no approval"
+
+        sending = asyncio.create_task(asyncio.to_thread(apps.run, "GMAIL_SEND_EMAIL", {"recipient_email": "a@b.c", "body": "Hi"}))
+        while not asked:
+            await asyncio.sleep(0.01)
+        assert asked == [("Gmail: send email", "recipient_email: a@b.c\nbody: Hi")]
+        assert [request["path"] for request in received] == ["/api/v3.1/tools/execute/GMAIL_FETCH_EMAILS"], "held until answered"
+        await answers.put(True)
+        assert await sending == {"id": "m1"}
+        assert received[-1]["path"] == "/api/v3.1/tools/execute/GMAIL_SEND_EMAIL"
+
+        await answers.put(False)
+        with pytest.raises(RuntimeError, match=r"^apps: The user declined GMAIL_SEND_EMAIL\.$"):
+            await asyncio.to_thread(apps.run, "GMAIL_SEND_EMAIL", {"recipient_email": "a@b.c", "body": "Again"})
+        assert len(received) == 2, "a declined tool never reaches Composio"
+    finally:
+        await gateway.close()
+        server.close()
+
+
+async def test_a_caller_that_hangs_up_withdraws_its_approval_question():
+    server, upstream, received = await fake_composio({})
+    waiting, withdrawn = asyncio.Event(), asyncio.Event()
+
+    async def approve(_text, _detail):
+        waiting.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            withdrawn.set()
+
+    gateway = await AppsGateway.start("ck", approve=approve, upstream=upstream)
+    try:
+        port = int(gateway.base_url.split(":")[2].split("/")[0])
+        _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        body = b'{"arguments": {}}'
+        path = gateway.base_url.split(str(port), 1)[1] + "/tools/execute/SLACK_SEND_MESSAGE"
+        writer.write(f"POST {path} HTTP/1.1\r\nContent-Length: {len(body)}\r\n\r\n".encode() + body)
+        await writer.drain()
+        await asyncio.wait_for(waiting.wait(), 2)
+        writer.close()
+        await asyncio.wait_for(withdrawn.wait(), 2)
+        assert received == []
+    finally:
+        await gateway.close()
+        server.close()
+
+
 def test_run_result_is_cut_to_the_limit_when_trimming_is_not_enough():
     module = load_instrument()
     apps = module.ConnectedApps("http://127.0.0.1:9/unused")
-    apps._call = lambda *args: {"data": {f"k{index}": "y" * 1500 for index in range(40)}, "successful": True}
+    apps._call = lambda *args, **kwargs: {"data": {f"k{index}": "y" * 1500 for index in range(40)}, "successful": True}
     result = apps.run("GMAIL_FETCH_EMAILS")
     assert isinstance(result, str) and len(result) <= module.RESULT_LIMIT + 20 and result.endswith("… (trimmed)")
 
@@ -209,7 +298,7 @@ def test_instructions_mention_apps_only_when_configured():
     assert "apps." not in without and "Composio" not in without
     assert "apps.run(" in with_apps and "apps.search(" in with_apps and "apps.connected()" in with_apps
     assert "with web instead" in with_apps, "falls back to the browser"
-    assert "confirm" in with_apps and "explicitly asked you to send" in with_apps
+    assert "waits for the user's approval" in with_apps and "The user declined" in with_apps
     assert not any("apps" in line for line in instrument_lines(web=False, apps=True)), "no web instruments, no apps text"
     tool_text = build_code_tool_definitions("darwin", desktop_app=True, web=True, apps=True)[0]["parameters"]["properties"]["code"]["description"]
     assert "apps.run(" in tool_text

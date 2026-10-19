@@ -272,6 +272,58 @@ async def test_steer_rejects_bad_bodies(api, body):
     assert (response.status_code, response.json()["code"]) == (400, "invalid_request")
 
 
+async def test_answer_endpoint_resolves_only_the_pending_question(tmp_path):
+    answers: list[str] = []
+    asking = asyncio.Event()
+
+    async def execute(context):
+        await asyncio.wait_for(asking.wait(), 5)
+        answers.append(await context.ask("Which size?", options=["Small", "Large"]))
+        answers.append(await context.ask("Gmail: send email", kind="approval", detail="to: a@b.c"))
+        await context.complete_run(notes=["done"])
+    template = tmp_path / "template"
+    template.mkdir()
+    scenarios = [{**item, "workspaceTemplatePath": str(template)} for item in list_scenarios()]
+    manager = RunnerManager(tmp_path / "data", executor=execute, scenarios=scenarios)
+    app = create_app(manager=manager, acquire_lease=False)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(transport=transport, base_url="http://runner") as client:
+        run_id = (await client.post("/api/runs", json={"scenarioId": "paint-draw-poster", "prompt": "Draw"})).json()["runId"]
+        url = f"/api/runs/{run_id}/answer"
+
+        async def question():
+            while (pending := (await client.get(f"/api/runs/{run_id}")).json()["run"]["question"]) is None:
+                await asyncio.sleep(0.01)
+            return pending
+
+        assert (await client.get(f"/api/runs/{run_id}")).json()["run"]["question"] is None
+        early = await client.post(url, json={"questionId": "nothing", "answer": "Large"})
+        assert (early.status_code, early.json()["code"]) == (409, "no_pending_question")
+        asking.set()
+        first = await asyncio.wait_for(question(), 5)
+        for body in ({"questionId": first["id"], "answer": "   "}, {"questionId": first["id"], "answer": "x" * 2001},
+                     {"questionId": first["id"]}, {"questionId": first["id"], "answer": "Large", "extra": 1}):
+            response = await client.post(url, json=body)
+            assert (response.status_code, response.json()["code"]) == (400, "invalid_request")
+        wrong = await client.post(url, json={"questionId": "another-question", "answer": "Large"})
+        assert (wrong.status_code, wrong.json()["code"]) == (409, "no_pending_question")
+        answered = await client.post(url, json={"questionId": first["id"], "answer": " Large "})
+        assert (answered.status_code, answered.json()) == (202, {"ok": True})
+        again = await client.post(url, json={"questionId": first["id"], "answer": "Small"})
+        assert (again.status_code, again.json()["code"]) == (409, "no_pending_question")
+
+        approval = await asyncio.wait_for(question(), 5)
+        assert (approval["kind"], approval["options"], approval["detail"]) == ("approval", ["approve", "deny"], "to: a@b.c")
+        unclear = await client.post(url, json={"questionId": approval["id"], "answer": "yes"})
+        assert (unclear.status_code, unclear.json()["code"]) == (400, "invalid_answer")
+        assert (await client.post(url, json={"questionId": approval["id"], "answer": "approve"})).status_code == 202
+        while (await client.get(f"/api/runs/{run_id}")).json()["run"]["status"] == "running":
+            await asyncio.sleep(0.01)
+        assert answers == ["Large", "approve"]
+        late = await client.post(url, json={"questionId": approval["id"], "answer": "approve"})
+        assert (late.status_code, late.json()["code"]) == (409, "run_not_running")
+
+
 async def test_attachments_are_copied_recorded_and_told_to_the_model(api, tmp_path):
     _, manager, client = api
     image = tmp_path / "my cover.PNG"
